@@ -10,6 +10,10 @@ import android.os.Environment
 import android.widget.*
 import android.graphics.Color
 import android.graphics.Typeface
+import android.content.ContentValues
+import android.provider.MediaStore
+import android.os.Build
+import java.io.FileInputStream
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
 import androidx.media3.common.MediaItem
@@ -34,6 +38,8 @@ class MainActivity : Activity() {
  private lateinit var spinner:ProgressBar
  private lateinit var sourceLabel:TextView
  private var exported:File?=null
+ private var publicVideo:Uri?=null
+ private lateinit var shareButton:Button
 
  private val bg=Color.rgb(10,15,29)
  private val panel=Color.rgb(24,33,53)
@@ -70,10 +76,21 @@ class MainActivity : Activity() {
   root.addView(txt("Visual scene detection identifies cuts and selects variable-length segments. It does not understand story meaning.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
+  shareButton=button("Share exported MP4",Color.rgb(49,66,96)).apply {
+   isEnabled=false
+   setOnClickListener {
+    val link=publicVideo
+    if(link==null) { status.text="Export is not yet available in gallery.";return@setOnClickListener }
+    startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+     type="video/mp4";putExtra(Intent.EXTRA_STREAM,link);addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    },"Share ClipForge video"))
+   }
+  }
+  root.addView(shareButton)
   spinner=ProgressBar(this).apply { visibility=android.view.View.GONE;isIndeterminate=true;indeterminateTintList=android.content.res.ColorStateList.valueOf(accent) }
   root.addView(spinner)
   status=txt("Ready when you are.",14f,Color.LTGRAY);root.addView(status)
-  root.addView(txt("Exports save to Android/data/com.clipforge.studio/files/Movies. Keep the app open while rendering.",12f,Color.GRAY))
+  root.addView(txt("Finished videos are saved in Movies/ClipForge in your phone gallery on Android 10+. Keep the app open during export.",12f,Color.GRAY))
   setContentView(ScrollView(this).apply { addView(root) })
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
@@ -154,7 +171,18 @@ class MainActivity : Activity() {
       .addListener(object:Transformer.Listener {
        override fun onCompleted(composition:Composition,exportResult:ExportResult) {
         busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
-        exported=output;status.text="MP4 exported: ${output.absolutePath}"
+        exported=output
+        status.text="Video rendered. Saving to phone gallery..."
+        thread {
+         try {
+          val gallery=saveToGallery(output)
+          runOnUiThread {
+           publicVideo=gallery
+           shareButton.isEnabled=gallery!=null
+           status.text=if(gallery!=null) "Success! Saved to Movies / ClipForge. Tap Share to send it." else "Export saved in app Movies folder: ${output.absolutePath}"
+          }
+         } catch(e:Exception) { runOnUiThread { status.text="MP4 exported, but gallery save failed: ${e.message}. File: ${output.absolutePath}" } }
+        }
        }
        override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
         busy=false;action.isEnabled=true
@@ -165,4 +193,20 @@ class MainActivity : Activity() {
    }catch(e:Exception) { runOnUiThread { busy=false;action.isEnabled=true;status.text="Error: ${e.message}" } }
   }
  }
+ private fun saveToGallery(file:File):Uri? {
+  if(Build.VERSION.SDK_INT<29)return null
+  val values=ContentValues().apply {
+   put(MediaStore.Video.Media.DISPLAY_NAME,file.name)
+   put(MediaStore.Video.Media.MIME_TYPE,"video/mp4")
+   put(MediaStore.Video.Media.RELATIVE_PATH,Environment.DIRECTORY_MOVIES+"/ClipForge")
+   put(MediaStore.Video.Media.IS_PENDING,1)
+  }
+  val uri=contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI,values)?:return null
+  try {
+   contentResolver.openOutputStream(uri)?.use { dest->FileInputStream(file).use { it.copyTo(dest) } } ?: error("Cannot open gallery output")
+   contentResolver.update(uri,ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING,0) },null,null)
+   return uri
+  }catch(e:Exception){contentResolver.delete(uri,null,null);throw e}
+ }
+
 }
