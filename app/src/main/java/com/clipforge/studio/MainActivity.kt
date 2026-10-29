@@ -212,7 +212,18 @@ class MainActivity : Activity() {
   }finally { retriever.release() }
  }
  private fun chooseShots(candidates:List<Shot>,duration:Long,target:Long,style:Int):List<Shot> {
-  val ranked=if(style==0)candidates.shuffled() else candidates.sortedByDescending { it.score }
+  // Timeline-aware selection: give the beginning, middle and end a fair chance.
+  val bins=8
+  val grouped=(0 until bins).map { bin->
+   candidates.filter { s-> ((s.start.toDouble()/duration)*bins).toInt().coerceIn(0,bins-1)==bin }
+    .let { if(style==0)it.shuffled() else it.sortedByDescending { s->s.score } }
+  }
+  val ranked=mutableListOf<Shot>()
+  var layer=0
+  while(grouped.any { it.size>layer }) {
+   for(group in grouped)if(group.size>layer)ranked.add(group[layer])
+   layer++
+  }
   val chosen=mutableListOf<Shot>()
   var remaining=min(target,duration)
   for(s in ranked) {
