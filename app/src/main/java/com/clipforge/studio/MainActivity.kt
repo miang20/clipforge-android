@@ -69,11 +69,11 @@ class MainActivity : Activity() {
   card.addView(minutes)
   card.addView(txt("03   EDITING STYLE",13f,accent,true))
   mode=Spinner(this)
-  val choices=listOf("Dynamic Shuffle","Chronological Highlights","Reverse Sequence")
+  val choices=listOf("High-Energy Remix","Story Flow (Chronological)","Reverse Highlights")
   mode.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,choices)
   card.addView(mode)
   root.addView(card)
-  root.addView(txt("Visual scene detection identifies cuts and selects variable-length segments. It does not understand story meaning.",12f,Color.LTGRAY))
+  root.addView(txt("SMART CUT ENGINE  •  Visual activity ranking  •  Static-scene filtering  •  Variable clip lengths  •  No repeated segments",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
   shareButton=button("Share exported MP4",Color.rgb(49,66,96)).apply {
@@ -102,21 +102,23 @@ class MainActivity : Activity() {
   }
  }
  private fun message(s:String)=runOnUiThread { status.text=s }
- private data class Shot(val start:Long,val end:Long)
+ private data class Shot(val start:Long,val end:Long,val score:Double=0.0)
  private fun signature(b:Bitmap):IntArray {
   val small=Bitmap.createScaledBitmap(b,12,8,true)
   val px=IntArray(96);small.getPixels(px,0,12,0,0,12,8);small.recycle()
   return IntArray(96) { i->val p=px[i];(((p shr 16) and 255)*3+((p shr 8) and 255)*6+(p and 255))/10 }
  }
  private fun diff(a:IntArray,b:IntArray)=a.indices.sumOf { abs(a[it]-b[it]) }.toDouble()/a.size
- private fun analyze(uri:Uri,target:Long):List<Shot> {
+ private fun analyze(uri:Uri,target:Long,style:Int):List<Shot> {
   val r=MediaMetadataRetriever()
   r.setDataSource(this,uri)
   try {
    val duration=r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
    require(duration>1500) { "Video too short" }
-   val step=max(1800L,duration/420L)
+   // Sample at most ~500 frames to keep analysis bounded on mobile devices.
+   val step=max(1400L,duration/500L)
    val boundaries=mutableListOf(0L)
+   val motion=mutableListOf<Pair<Long,Double>>()
    var prev:IntArray?=null
    var t=0L
    while(t<duration) {
@@ -124,36 +126,59 @@ class MainActivity : Activity() {
     if(frame!=null) {
      val current=signature(frame)
      val old=prev
-     if(old!=null && diff(old,current)>24 && t-boundaries.last()>2500)boundaries.add(t)
+     if(old!=null) {
+      val change=diff(old,current)
+      motion.add(t to change)
+      // A large visual discontinuity is a likely scene boundary.
+      if(change>29.0 && t-boundaries.last()>=2200L)boundaries.add(t)
+     }
      prev=current;frame.recycle()
     }
     t+=step
    }
    boundaries.add(duration)
-   val shots=boundaries.zipWithNext { a,b->Shot(a,b) }.flatMap { s->
-    val n=ceil((s.end-s.start)/18000.0).toInt().coerceAtLeast(1)
-    (0 until n).map { i->
-     Shot(s.start+(s.end-s.start)*i/n,s.start+(s.end-s.start)*(i+1)/n)
+   // Split unusually long shots; do not force every clip to a fixed length.
+   val candidates=boundaries.zipWithNext { a,b->Shot(a,b) }.flatMap { s->
+    val pieces=ceil((s.end-s.start)/14000.0).toInt().coerceAtLeast(1)
+    (0 until pieces).map { i->
+     Shot(s.start+(s.end-s.start)*i/pieces,s.start+(s.end-s.start)*(i+1)/pieces)
     }
-   }.filter { it.end-it.start>=700 }
-   val shuffled=when(mode.selectedItemPosition){1->shots;2->shots.reversed();else->shots.shuffled()}
-   val picked=mutableListOf<Shot>();var remaining=min(target,duration)
-   for(s in shuffled) {
-    if(remaining<700)break
-    val length=min(s.end-s.start,remaining)
-    if(length>=700) { picked.add(Shot(s.start,s.start+length));remaining-=length }
+   }.filter { it.end-it.start>=1100L }.map { shot->
+    val changes=motion.filter { it.first>=shot.start && it.first<shot.end }.map { it.second }
+    val activity=if(changes.isEmpty())0.0 else changes.average()
+    // Penalize almost-static footage and extreme flashes/cut artifacts.
+    val score=activity.coerceIn(0.0,28.0) + min(shot.end-shot.start,11000L)/2500.0
+    shot.copy(score=score)
    }
-   return picked
+   if(candidates.isEmpty())error("No usable video shots detected")
+   // Rank first, then fill the requested duration with diverse non-overlapping shots.
+   val ranked=candidates.sortedByDescending { it.score }
+   val chosen=mutableListOf<Shot>()
+   var remaining=min(target,duration)
+   for(s in ranked) {
+    if(remaining<1100L)break
+    val length=min(s.end-s.start,remaining)
+    if(length<1100L)continue
+    chosen.add(s.copy(end=s.start+length))
+    remaining-=length
+   }
+   // Source-order mode preserves narrative continuity; shuffle is deterministic per video.
+   return when(style) {
+    1->chosen.sortedBy { it.start }
+    2->chosen.sortedByDescending { it.start }
+    else->chosen.shuffled(kotlin.random.Random(duration))
+   }
   }finally { r.release() }
  }
  private fun startExport() {
   if(busy)return
   val uri=source?:return
   val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,30)?:10L
+  val style=mode.selectedItemPosition
   busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
   thread {
    try {
-    val shots=analyze(uri,mins*60000L)
+    val shots=analyze(uri,mins*60000L,style)
     if(shots.isEmpty())error("No usable scenes found")
     message("Selected ${shots.size} clips. Exporting...")
     val items=shots.map { s->
@@ -185,7 +210,7 @@ class MainActivity : Activity() {
         }
        }
        override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
-        busy=false;action.isEnabled=true
+        busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
         status.text="Export failed: ${exportException.message}"
        }
       }).build().start(composition,output.absolutePath)
