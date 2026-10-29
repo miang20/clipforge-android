@@ -137,6 +137,75 @@ class MainActivity : Activity() {
   return IntArray(96) { i->val p=px[i];(((p shr 16) and 255)*3+((p shr 8) and 255)*6+(p and 255))/10 }
  }
  private fun diff(a:IntArray,b:IntArray)=a.indices.sumOf { abs(a[it]-b[it]) }.toDouble()/a.size
+ private fun quickScan(uri:Uri):Pair<Long,List<Shot>> {
+  val retriever=MediaMetadataRetriever()
+  retriever.setDataSource(this,uri)
+  try {
+   val duration=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
+   require(duration>=15000L) { "Video must be at least 15 seconds" }
+   // One bounded scan for the entire batch. At most 100 frame requests.
+   val step=max(1000L,ceil(duration/100.0).toLong())
+   val marks=mutableListOf(0L)
+   val activity=mutableListOf<Pair<Long,Double>>()
+   var previous:IntArray?=null
+   var t=0L
+   var count=0
+   while(t<duration) {
+    val frame=retriever.getFrameAtTime(t*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    if(frame!=null) {
+     val sig=signature(frame)
+     previous?.let {
+      val delta=diff(it,sig)
+      activity.add(t to delta)
+      if(delta>29.0 && t-marks.last()>=2000L)marks.add(t)
+     }
+     previous=sig
+     frame.recycle()
+    }
+    count++
+    if(count%10==0)message("Analyzing video... ${min(100,(t*100/duration).toInt())}%")
+    t+=step
+   }
+   marks.add(duration)
+   val clips=marks.zipWithNext { a,b->Shot(a,b) }.flatMap { s->
+    val n=ceil((s.end-s.start)/12000.0).toInt().coerceAtLeast(1)
+    (0 until n).map { i->Shot(s.start+(s.end-s.start)*i/n,s.start+(s.end-s.start)*(i+1)/n) }
+   }.filter { it.end-it.start>=1000L }.map { s->
+    val values=activity.filter { it.first>=s.start && it.first<s.end }.map { it.second }
+    s.copy(score=(if(values.isEmpty())0.0 else values.average())+min(s.end-s.start,12000L)/3000.0)
+   }
+   require(clips.isNotEmpty()) { "No usable scenes found" }
+   return duration to clips
+  }finally { retriever.release() }
+ }
+ private fun chooseShots(candidates:List<Shot>,duration:Long,target:Long,style:Int):List<Shot> {
+  val ranked=if(style==0)candidates.shuffled() else candidates.sortedByDescending { it.score }
+  val chosen=mutableListOf<Shot>()
+  var remaining=min(target,duration)
+  for(s in ranked) {
+   if(remaining<1000L)break
+   val len=min(s.end-s.start,remaining)
+   if(len>=1000L) { chosen.add(s.copy(end=s.start+len));remaining-=len }
+  }
+  return when(style) {
+   2->chosen.sortedBy { it.start }
+   3->chosen.sortedByDescending { it.start }
+   else->chosen.shuffled()
+  }
+ }
+ private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
+  val lengths=listOf(15000L,20000L,30000L,45000L,60000L).filter { it<=duration }
+  val best=lengths.flatMap { length->
+   candidates.mapNotNull { s->
+    if(s.start+length>duration)null else {
+     val nearby=candidates.filter { it.start<s.start+length && it.end>s.start }
+     val score=nearby.map { it.score }.average()+min(length,45000L)/15000.0
+     Shot(s.start,s.start+length,score)
+    }
+   }
+  }.maxByOrNull { it.score }
+  return listOf(best?:Shot(0L,min(duration,30000L)))
+ }
  private fun analyze(uri:Uri,target:Long,style:Int):List<Shot> {
   val r=MediaMetadataRetriever()
   r.setDataSource(this,uri)
@@ -260,10 +329,11 @@ class MainActivity : Activity() {
   thread {
    try {
     val jobs=if(batch) {
-     val longShots=analyze(uri,mins*60000L,1)
-     val fast=analyze(uri,30000L,1)
-     val hook=analyze(uri,45000L,0)
-     val story=analyzeAutoShort(uri,2)
+     val (duration,candidates)=quickScan(uri)
+     val longShots=chooseShots(candidates,duration,mins*60000L,1)
+     val fast=chooseShots(candidates,duration,30000L,1)
+     val hook=chooseShots(candidates,duration,45000L,0)
+     val story=chooseStory(candidates,duration)
      listOf(
       "Monster_Long" to longShots,
       "Short_Energy" to fast,
