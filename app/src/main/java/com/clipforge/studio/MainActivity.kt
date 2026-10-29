@@ -76,7 +76,7 @@ class MainActivity : Activity() {
   card.addView(outputType)
   card.addView(txt("SHORT LENGTH",13f,accent,true))
   shortSeconds=Spinner(this).apply {
-   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("15 seconds","30 seconds","45 seconds","60 seconds"))
+   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Auto Fit (15–60 sec)","15 seconds","30 seconds","45 seconds","60 seconds"))
   }
   card.addView(shortSeconds)
   card.addView(txt("04   EDITING STYLE",13f,accent,true))
@@ -85,7 +85,7 @@ class MainActivity : Activity() {
   mode.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,choices)
   card.addView(mode)
   root.addView(card)
-  root.addView(txt("Full Remix rearranges source clips each export. Short mode sets duration only; automatic 9:16 cropping is not yet available.",12f,Color.LTGRAY))
+  root.addView(txt("Full Remix rearranges source clips each export. Auto Fit shorts keep a 15–60s contiguous source passage; automatic 9:16 cropping is not yet available.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
   shareButton=button("Share exported MP4",Color.rgb(49,66,96)).apply {
@@ -186,17 +186,49 @@ class MainActivity : Activity() {
    }
   }finally { r.release() }
  }
+ private fun analyzeAutoShort(uri:Uri,style:Int):List<Shot> {
+  // Prefer intact contiguous source scenes rather than forcing a 15/30/45/60 second cut.
+  val r=MediaMetadataRetriever()
+  r.setDataSource(this,uri)
+  val duration=try { r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L } finally { r.release() }
+  require(duration>=15000L) { "Auto Fit needs a source video at least 15 seconds long" }
+  // Score full scenes using the existing detector, then choose a contiguous 15–60s passage.
+  val candidates=analyze(uri,min(duration,60000L),2).sortedBy { it.start }
+  if(candidates.isEmpty())error("No scenes detected")
+  val windows=mutableListOf<List<Shot>>()
+  for(start in candidates.indices) {
+   val group=mutableListOf<Shot>()
+   var total=0L
+   for(j in start until candidates.size) {
+    val s=candidates[j]
+    if(group.isNotEmpty() && s.start-group.last().end>1500L)break
+    val len=s.end-s.start
+    if(total+len>60000L)break
+    group.add(s);total+=len
+    if(total>=15000L)windows.add(group.toList())
+   }
+  }
+  val best=windows.maxByOrNull { window->
+   val length=window.sumOf { it.end-it.start }
+   window.sumOf { it.score*(it.end-it.start)/1000.0 }/max(1.0,length/1000.0) + min(length,45000L)/9000.0
+  }
+  // Fall back to an uninterrupted 15–60s section when scene windows are sparse.
+  return best ?: listOf(Shot(0L,min(duration,60000L)))
+ }
  private fun startExport() {
   if(busy)return
   val uri=source?:return
   val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,180)?:10L
   val isShort=outputType.selectedItemPosition==1
-  val targetMs=if(isShort) listOf(15L,30L,45L,60L)[shortSeconds.selectedItemPosition]*1000L else mins*60000L
+  val autoShort=isShort && shortSeconds.selectedItemPosition==0
+  val targetMs=if(isShort) {
+   if(autoShort) 60000L else listOf(15L,30L,45L,60L)[shortSeconds.selectedItemPosition-1]*1000L
+  } else mins*60000L
   val style=mode.selectedItemPosition
   busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
   thread {
    try {
-    val shots=analyze(uri,targetMs,style)
+    val shots=if(autoShort) analyzeAutoShort(uri,style) else analyze(uri,targetMs,style)
     if(shots.isEmpty())error("No usable scenes found")
     message("Selected ${shots.size} clips. Exporting...")
     val items=shots.map { s->
