@@ -42,6 +42,8 @@ class MainActivity : Activity() {
  private var exported:File?=null
  private var publicVideo:Uri?=null
  private lateinit var shareButton:Button
+ private lateinit var summary:TextView
+ private lateinit var quality:Spinner
 
  private val bg=Color.rgb(10,15,29)
  private val panel=Color.rgb(24,33,53)
@@ -84,6 +86,11 @@ class MainActivity : Activity() {
   val choices=listOf("Full Remix (Rearrange All)","High-Energy Remix","Story Flow (Chronological)","Reverse Highlights")
   mode.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,choices)
   card.addView(mode)
+  card.addView(txt("05   EXPORT QUALITY",13f,accent,true))
+  quality=Spinner(this).apply {
+   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Balanced • H.264 + AAC","Original video codec when supported"))
+  }
+  card.addView(quality)
   root.addView(card)
   root.addView(txt("Full Remix rearranges clips each export. Auto Fit scans the entire source for a strong continuous 15–60s passage. Vertical cropping is not yet available.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
@@ -102,6 +109,7 @@ class MainActivity : Activity() {
   spinner=ProgressBar(this).apply { visibility=android.view.View.GONE;isIndeterminate=true;indeterminateTintList=android.content.res.ColorStateList.valueOf(accent) }
   root.addView(spinner)
   status=txt("Ready when you are.",14f,Color.LTGRAY);root.addView(status)
+  summary=txt("No export plan yet.",13f,accent);root.addView(summary)
   root.addView(txt("Finished videos are saved in Movies/ClipForge in your phone gallery on Android 10+. Keep the app open during export.",12f,Color.GRAY))
   setContentView(ScrollView(this).apply { addView(root) })
  }
@@ -237,11 +245,20 @@ class MainActivity : Activity() {
    if(autoShort) 60000L else listOf(15L,30L,45L,60L)[shortSeconds.selectedItemPosition-1]*1000L
   } else mins*60000L
   val style=mode.selectedItemPosition
+  val qualityChoice=quality.selectedItemPosition
+  publicVideo=null;shareButton.isEnabled=false
   busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
   thread {
    try {
     val shots=if(autoShort) analyzeAutoShort(uri,style) else analyze(uri,targetMs,style)
     if(shots.isEmpty())error("No usable scenes found")
+    val editDuration=shots.sumOf { it.end-it.start }
+    val freeSpace=(getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir).usableSpace
+    // Conservative preflight: prevent obvious low-storage failures before encoding.
+    require(freeSpace>100L*1024*1024) { "Not enough free storage. Free at least 100 MB and retry." }
+    runOnUiThread {
+     summary.text="EDIT PLAN  •  ${shots.size} clips  •  ${editDuration/1000}s  •  ${if(isShort) "SHORT" else "LONG"}  •  ${if(style==0) "FULL REMIX" else "HIGHLIGHTS"}"
+    }
     message("Selected ${shots.size} clips. Exporting...")
     val items=shots.map { s->
      val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
@@ -254,8 +271,9 @@ class MainActivity : Activity() {
     val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
     val output=File(dir,"ClipForge_${System.currentTimeMillis()}.mp4")
     runOnUiThread {
-     Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC)
-      .addListener(object:Transformer.Listener {
+     val builder=Transformer.Builder(this)
+     if(qualityChoice==0)builder.setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC)
+     builder.addListener(object:Transformer.Listener {
        override fun onCompleted(composition:Composition,exportResult:ExportResult) {
         busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
         exported=output
