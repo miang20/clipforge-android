@@ -44,6 +44,8 @@ class MainActivity : Activity() {
  private lateinit var shareButton:Button
  private lateinit var summary:TextView
  private lateinit var quality:Spinner
+ private lateinit var batchMode:CheckBox
+ private var activeTransformer:Transformer?=null
 
  private val bg=Color.rgb(10,15,29)
  private val panel=Color.rgb(24,33,53)
@@ -91,6 +93,12 @@ class MainActivity : Activity() {
    adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Balanced • H.264 + AAC","Original video codec when supported"))
   }
   card.addView(quality)
+  batchMode=CheckBox(this).apply {
+   text="MONSTER BATCH  •  1 long + 3 different Shorts"
+   setTextColor(accent);isChecked=true
+   buttonTintList=android.content.res.ColorStateList.valueOf(accent)
+  }
+  card.addView(batchMode)
   root.addView(card)
   root.addView(txt("Full Remix rearranges clips each export. Auto Fit scans the entire source for a strong continuous 15–60s passage. Vertical cropping is not yet available.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
@@ -245,59 +253,90 @@ class MainActivity : Activity() {
    if(autoShort) 60000L else listOf(15L,30L,45L,60L)[shortSeconds.selectedItemPosition-1]*1000L
   } else mins*60000L
   val style=mode.selectedItemPosition
+  val batch=batchMode.isChecked
   val qualityChoice=quality.selectedItemPosition
   publicVideo=null;shareButton.isEnabled=false
   busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
   thread {
    try {
-    val shots=if(autoShort) analyzeAutoShort(uri,style) else analyze(uri,targetMs,style)
-    if(shots.isEmpty())error("No usable scenes found")
-    val editDuration=shots.sumOf { it.end-it.start }
+    val jobs=if(batch) {
+     val longShots=analyze(uri,mins*60000L,1)
+     val fast=analyze(uri,30000L,1)
+     val hook=analyze(uri,45000L,0)
+     val story=analyzeAutoShort(uri,2)
+     listOf(
+      "Monster_Long" to longShots,
+      "Short_Energy" to fast,
+      "Short_Curiosity" to hook,
+      "Short_Story" to story
+     )
+    } else {
+     listOf((if(isShort)"Monster_Short" else "Monster_Long") to
+      (if(autoShort)analyzeAutoShort(uri,style) else analyze(uri,targetMs,style)))
+    }
+    require(jobs.all { it.second.isNotEmpty() }) { "Not enough usable scenes" }
     val freeSpace=(getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir).usableSpace
-    // Conservative preflight: prevent obvious low-storage failures before encoding.
-    require(freeSpace>100L*1024*1024) { "Not enough free storage. Free at least 100 MB and retry." }
+    require(freeSpace>300L*1024*1024) { "Please free at least 300 MB before batch export" }
     runOnUiThread {
-     summary.text="EDIT PLAN  •  ${shots.size} clips  •  ${editDuration/1000}s  •  ${if(isShort) "SHORT" else "LONG"}  •  ${if(style==0) "FULL REMIX" else "HIGHLIGHTS"}"
+     summary.text="EXPORT PLAN  •  ${jobs.size} MP4 videos  •  ${jobs.sumOf { it.second.size }} selected segments"
     }
-    message("Selected ${shots.size} clips. Exporting...")
-    val items=shots.map { s->
-     val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
-      MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()
-     ).build()
-     EditedMediaItem.Builder(media).build()
-    }
-    val sequence=EditedMediaItemSequence.Builder(items).build()
-    val composition=Composition.Builder(sequence).build()
-    val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
-    val output=File(dir,"ClipForge_${System.currentTimeMillis()}.mp4")
-    runOnUiThread {
-     val builder=Transformer.Builder(this)
-     if(qualityChoice==0)builder.setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC)
-     builder.addListener(object:Transformer.Listener {
-       override fun onCompleted(composition:Composition,exportResult:ExportResult) {
-        busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
-        exported=output
-        status.text="Video rendered. Saving to phone gallery..."
-        thread {
-         try {
-          val gallery=saveToGallery(output)
-          runOnUiThread {
-           publicVideo=gallery
-           shareButton.isEnabled=gallery!=null
-           status.text=if(gallery!=null) "Success! Saved to Movies / ClipForge. Tap Share to send it." else "Export saved in app Movies folder: ${output.absolutePath}"
-          }
-         } catch(e:Exception) { runOnUiThread { status.text="MP4 exported, but gallery save failed: ${e.message}. File: ${output.absolutePath}" } }
-        }
-       }
-       override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
-        busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
-        status.text="Export failed: ${exportException.message}"
-       }
-      }).build().start(composition,output.absolutePath)
-    }
-   }catch(e:Exception) { runOnUiThread { busy=false;action.isEnabled=true;status.text="Error: ${e.message}" } }
+    runOnUiThread { renderJobs(uri,jobs,qualityChoice,0,mutableListOf()) }
+   }catch(e:Exception) {
+    runOnUiThread { busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE;status.text="Error: ${e.message}" }
+   }
   }
  }
+ private fun renderJobs(
+  uri:Uri,
+  jobs:List<Pair<String,List<Shot>>>,
+  qualityChoice:Int,
+  index:Int,
+  saved:MutableList<Uri>
+ ) {
+  if(index>=jobs.size) {
+   busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
+   publicVideo=saved.firstOrNull();shareButton.isEnabled=saved.isNotEmpty()
+   status.text="Batch complete: ${saved.size}/${jobs.size} videos saved in Movies/ClipForge"
+   return
+  }
+  val (name,shots)=jobs[index]
+  status.text="Rendering ${index+1}/${jobs.size}: ${name}..."
+  val items=shots.map { s->
+   val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
+    MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()
+   ).build()
+   EditedMediaItem.Builder(media).build()
+  }
+  val composition=Composition.Builder(EditedMediaItemSequence.Builder(items).build()).build()
+  val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
+  val output=File(dir,"${name}_${System.currentTimeMillis()}.mp4")
+  try {
+   val builder=Transformer.Builder(this)
+   if(qualityChoice==0)builder.setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC)
+   activeTransformer=builder.addListener(object:Transformer.Listener {
+    override fun onCompleted(composition:Composition,exportResult:ExportResult) {
+     status.text="Saving ${index+1}/${jobs.size} to gallery..."
+     thread {
+      val gallery=try { saveToGallery(output) }catch(_:Exception){null}
+      runOnUiThread {
+       if(gallery!=null)saved.add(gallery)
+       if(index==0)exported=output
+       renderJobs(uri,jobs,qualityChoice,index+1,saved)
+      }
+     }
+    }
+    override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
+     busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
+     status.text="Export ${index+1}/${jobs.size} failed: ${exportException.message}. Saved ${saved.size} earlier videos."
+    }
+   }).build()
+   activeTransformer?.start(composition,output.absolutePath)
+  }catch(e:Exception) {
+   busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
+   status.text="Export ${index+1}/${jobs.size} failed: ${e.message}"
+  }
+ }
+
  private fun saveToGallery(file:File):Uri? {
   if(Build.VERSION.SDK_INT<29)return null
   val values=ContentValues().apply {
