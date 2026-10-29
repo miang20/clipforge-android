@@ -35,6 +35,8 @@ class MainActivity : Activity() {
  private var source:Uri?=null
  private var busy=false
  private lateinit var mode:Spinner
+ private lateinit var outputType:Spinner
+ private lateinit var shortSeconds:Spinner
  private lateinit var spinner:ProgressBar
  private lateinit var sourceLabel:TextView
  private var exported:File?=null
@@ -67,13 +69,23 @@ class MainActivity : Activity() {
   card.addView(txt("02   TARGET DURATION (MINUTES)",13f,accent,true))
   minutes=EditText(this).apply { inputType=InputType.TYPE_CLASS_NUMBER;setText("10");setTextColor(Color.WHITE);setHintTextColor(Color.GRAY);hint="10–15 recommended";backgroundTintList=android.content.res.ColorStateList.valueOf(accent) }
   card.addView(minutes)
-  card.addView(txt("03   EDITING STYLE",13f,accent,true))
+  card.addView(txt("03   OUTPUT FORMAT",13f,accent,true))
+  outputType=Spinner(this).apply {
+   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Long Video (custom minutes)","YouTube Short (9:16 source recommended)"))
+  }
+  card.addView(outputType)
+  card.addView(txt("SHORT LENGTH",13f,accent,true))
+  shortSeconds=Spinner(this).apply {
+   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("15 seconds","30 seconds","45 seconds","60 seconds"))
+  }
+  card.addView(shortSeconds)
+  card.addView(txt("04   EDITING STYLE",13f,accent,true))
   mode=Spinner(this)
-  val choices=listOf("High-Energy Remix","Story Flow (Chronological)","Reverse Highlights")
+  val choices=listOf("Full Remix (Rearrange All)","High-Energy Remix","Story Flow (Chronological)","Reverse Highlights")
   mode.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,choices)
   card.addView(mode)
   root.addView(card)
-  root.addView(txt("SMART CUT ENGINE  •  Visual activity ranking  •  Static-scene filtering  •  Variable clip lengths  •  No repeated segments",12f,Color.LTGRAY))
+  root.addView(txt("Full Remix rearranges source clips each export. Short mode sets duration only; automatic 9:16 cropping is not yet available.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
   shareButton=button("Share exported MP4",Color.rgb(49,66,96)).apply {
@@ -152,7 +164,7 @@ class MainActivity : Activity() {
    }
    if(candidates.isEmpty())error("No usable video shots detected")
    // Rank first, then fill the requested duration with diverse non-overlapping shots.
-   val ranked=candidates.sortedByDescending { it.score }
+   val ranked=if(style==0) candidates else candidates.sortedByDescending { it.score }
    val chosen=mutableListOf<Shot>()
    var remaining=min(target,duration)
    for(s in ranked) {
@@ -164,21 +176,27 @@ class MainActivity : Activity() {
    }
    // Source-order mode preserves narrative continuity; shuffle is deterministic per video.
    return when(style) {
-    1->chosen.sortedBy { it.start }
-    2->chosen.sortedByDescending { it.start }
-    else->chosen.shuffled(kotlin.random.Random(duration))
+    2->chosen.sortedBy { it.start }
+    3->chosen.sortedByDescending { it.start }
+    else->{
+     // A new random ordering on each export, including repeated exports of the same source.
+     val shuffled=chosen.shuffled()
+     if(shuffled.size>1 && shuffled.zipWithNext().all { (a,b)->a.start<b.start }) shuffled.reversed() else shuffled
+    }
    }
   }finally { r.release() }
  }
  private fun startExport() {
   if(busy)return
   val uri=source?:return
-  val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,30)?:10L
+  val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,180)?:10L
+  val isShort=outputType.selectedItemPosition==1
+  val targetMs=if(isShort) listOf(15L,30L,45L,60L)[shortSeconds.selectedItemPosition]*1000L else mins*60000L
   val style=mode.selectedItemPosition
   busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
   thread {
    try {
-    val shots=analyze(uri,mins*60000L,style)
+    val shots=analyze(uri,targetMs,style)
     if(shots.isEmpty())error("No usable scenes found")
     message("Selected ${shots.size} clips. Exporting...")
     val items=shots.map { s->
