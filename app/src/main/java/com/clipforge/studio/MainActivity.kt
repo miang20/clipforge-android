@@ -85,7 +85,7 @@ class MainActivity : Activity() {
   mode.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,choices)
   card.addView(mode)
   root.addView(card)
-  root.addView(txt("Full Remix rearranges source clips each export. Auto Fit shorts keep a 15–60s contiguous source passage; automatic 9:16 cropping is not yet available.",12f,Color.LTGRAY))
+  root.addView(txt("Full Remix rearranges clips each export. Auto Fit scans the entire source for a strong continuous 15–60s passage. Vertical cropping is not yet available.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
   shareButton=button("Share exported MP4",Color.rgb(49,66,96)).apply {
@@ -187,33 +187,45 @@ class MainActivity : Activity() {
   }finally { r.release() }
  }
  private fun analyzeAutoShort(uri:Uri,style:Int):List<Shot> {
-  // Prefer intact contiguous source scenes rather than forcing a 15/30/45/60 second cut.
+  // Scan the entire source, then find the strongest continuous 15–60 second passage.
   val r=MediaMetadataRetriever()
   r.setDataSource(this,uri)
-  val duration=try { r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L } finally { r.release() }
-  require(duration>=15000L) { "Auto Fit needs a source video at least 15 seconds long" }
-  // Score full scenes using the existing detector, then choose a contiguous 15–60s passage.
-  val candidates=analyze(uri,min(duration,60000L),2).sortedBy { it.start }
-  if(candidates.isEmpty())error("No scenes detected")
-  val windows=mutableListOf<List<Shot>>()
-  for(start in candidates.indices) {
-   val group=mutableListOf<Shot>()
-   var total=0L
-   for(j in start until candidates.size) {
-    val s=candidates[j]
-    if(group.isNotEmpty() && s.start-group.last().end>1500L)break
-    val len=s.end-s.start
-    if(total+len>60000L)break
-    group.add(s);total+=len
-    if(total>=15000L)windows.add(group.toList())
+  try {
+   val duration=r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
+   require(duration>=15000L) { "Auto Fit needs a source at least 15 seconds long" }
+   val step=max(1000L,duration/600L)
+   val samples=mutableListOf<Pair<Long,Double>>()
+   var previous:IntArray?=null
+   var t=0L
+   while(t<duration) {
+    val frame=r.getFrameAtTime(t*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    if(frame!=null) {
+     val now=signature(frame)
+     previous?.let { samples.add(t to diff(it,now).coerceIn(0.0,45.0)) }
+     previous=now
+     frame.recycle()
+    }
+    t+=step
    }
-  }
-  val best=windows.maxByOrNull { window->
-   val length=window.sumOf { it.end-it.start }
-   window.sumOf { it.score*(it.end-it.start)/1000.0 }/max(1.0,length/1000.0) + min(length,45000L)/9000.0
-  }
-  // Fall back to an uninterrupted 15–60s section when scene windows are sparse.
-  return best ?: listOf(Shot(0L,min(duration,60000L)))
+   if(samples.isEmpty())return listOf(Shot(0L,min(30000L,duration)))
+   // 15, 20, 30, 40, 50 and 60 second candidates; preserve each selected passage intact.
+   val lengths=listOf(15000L,20000L,30000L,40000L,50000L,60000L).filter { it<=duration }
+   var bestStart=0L
+   var bestLength=15000L
+   var bestScore=Double.NEGATIVE_INFINITY
+   for(length in lengths) {
+    for((start,_) in samples) {
+     if(start+length>duration)continue
+     val inside=samples.filter { it.first>=start && it.first<start+length }
+     if(inside.isEmpty())continue
+     val avg=inside.map { it.second }.average()
+     // Favor dynamic footage without rewarding extremely short clips.
+     val score=avg+min(length,45000L)/15000.0
+     if(score>bestScore) { bestScore=score;bestStart=start;bestLength=length }
+    }
+   }
+   return listOf(Shot(bestStart,bestStart+bestLength,bestScore))
+  } finally { r.release() }
  }
  private fun startExport() {
   if(busy)return
