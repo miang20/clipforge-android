@@ -15,11 +15,33 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build debug APK using preinstalled Android SDK
+      - name: Ensure Android SDK packages
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
-          gradle assembleDebug --stacktrace
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - name: Build APK and show concise error
+        shell: bash
+        run: |
+          set +e
+          gradle assembleDebug --console=plain --warning-mode=none > build.log 2>&1
+          result=$?
+          if [ "$result" -ne 0 ]; then
+            echo "::group::COMPILATION ERRORS (read this section)"
+            grep -n -E -A 8 '(^e: |^FAILURE:|^\* What went wrong:|^Execution failed|^> |error:|Could not |SDK location|License for package)' build.log | tail -110 || true
+            echo "::endgroup::"
+            echo "::error::APK compilation failed; see COMPILATION ERRORS above and build-log artifact."
+          else
+            echo "BUILD SUCCESSFUL"
+          fi
+          exit "$result"
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClipForge-build-log
+          path: build.log
+      - uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: ClipForge-debug-APK
           path: app/build/outputs/apk/debug/app-debug.apk
