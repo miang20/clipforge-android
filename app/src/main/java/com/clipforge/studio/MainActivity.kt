@@ -50,10 +50,10 @@ class MainActivity : Activity() {
  private lateinit var batchMode:CheckBox
  private var activeTransformer:Transformer?=null
 
- private val bg=Color.rgb(7,11,24)
- private val panel=Color.rgb(19,29,49)
- private val accent=Color.rgb(72,216,199)
- private val soft=Color.rgb(164,180,204)
+ private val bg=Color.rgb(13,3,9)
+ private val panel=Color.rgb(34,9,19)
+ private val accent=Color.rgb(239,51,62)
+ private val soft=Color.rgb(222,178,186)
  private fun dp(v:Int)=(v*resources.displayMetrics.density).toInt()
  private fun shape(color:Int, radius:Int=18)=GradientDrawable().apply { setColor(color);cornerRadius=dp(radius).toFloat() }
  private fun txt(s:String,size:Float,color:Int=Color.WHITE,bold:Boolean=false)=TextView(this).apply {
@@ -76,21 +76,22 @@ class MainActivity : Activity() {
   super.onCreate(savedInstanceState)
   window.statusBarColor=bg;window.navigationBarColor=bg
   val root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(22),dp(24),dp(22),dp(32));setBackgroundColor(bg) }
-  root.addView(txt("✦  CLIPFORGE  /  MONSTER EDITION",13f,accent,true))
-  root.addView(txt("Your video. Four powerful edits.",27f,Color.WHITE,true))
+  root.addView(txt("◈  CLIPFORGE  /  MONSTER EDITION",13f,accent,true))
+  root.addView(txt("UNLEASH THE EDIT.",29f,Color.WHITE,true))
   root.addView(txt("PRIVATE  •  OFFLINE  •  ONE-TAP STUDIO",12f,soft,true))
   val hero=LinearLayout(this).apply {
    orientation=LinearLayout.VERTICAL;setPadding(dp(18),dp(14),dp(18),dp(14))
-   background=GradientDrawable(GradientDrawable.Orientation.TL_BR,intArrayOf(Color.rgb(27,70,83),panel)).apply { cornerRadius=dp(20).toFloat() }
+   background=GradientDrawable(GradientDrawable.Orientation.TL_BR,intArrayOf(Color.rgb(186,7,23),Color.rgb(70,3,18),panel)).apply { cornerRadius=dp(20).toFloat() }
   }
-  hero.addView(txt("01 LONG VIDEO   +   03 VERTICAL SHORTS",15f,Color.WHITE,true))
-  hero.addView(txt("Automatic scene analysis, fresh edits and original sound. All on your phone.",12f,soft))
+  hero.addView(txt("◈  ONE SOURCE. FOUR EPIC CUTS.",17f,Color.WHITE,true))
+  hero.addView(txt("01 CINEMATIC LONG VIDEO   /   03 VERTICAL SHORTS",12f,Color.WHITE,true))
+  hero.addView(txt("Offline scene analysis • Original audio • One tap",12f,soft))
   root.addView(hero)
   root.addView(txt(" ",7f))
   val card=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(18),dp(18),dp(18),dp(18));background=shape(panel) }
   card.addView(txt("01   SOURCE VIDEO",13f,accent,true))
   sourceLabel=txt("No video selected",14f,Color.LTGRAY);card.addView(sourceLabel)
-  val select=button("Choose video from phone",Color.rgb(49,66,96)).apply { setOnClickListener {
+  val select=button("Choose video from phone",Color.rgb(85,25,39)).apply { setOnClickListener {
    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE);type="video/*" },100)
   }}
   card.addView(select)
@@ -105,7 +106,7 @@ class MainActivity : Activity() {
   advanced.addView(outputType)
   advanced.addView(txt("SHORT LENGTH",13f,accent,true))
   shortSeconds=Spinner(this).apply {
-   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Auto Fit (15–60 sec)","15 seconds","30 seconds","45 seconds","60 seconds"))
+   adapter=menu(listOf("Auto Fit (15–60 sec)","15 seconds","30 seconds","45 seconds","60 seconds"))
   }
   advanced.addView(shortSeconds)
   advanced.addView(txt("04   EDITING STYLE",13f,accent,true))
@@ -115,7 +116,7 @@ class MainActivity : Activity() {
   advanced.addView(mode)
   advanced.addView(txt("05   EXPORT QUALITY",13f,accent,true))
   quality=Spinner(this).apply {
-   adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,listOf("Balanced • H.264 + AAC","Original video codec when supported"))
+   adapter=menu(listOf("Balanced • H.264 + AAC","Original video codec when supported"))
   }
   advanced.addView(quality)
   batchMode=CheckBox(this).apply {
@@ -124,7 +125,7 @@ class MainActivity : Activity() {
    buttonTintList=android.content.res.ColorStateList.valueOf(accent)
   }
   advanced.addView(batchMode)
-  val toggle=button("⚙  Advanced settings  ▾",Color.rgb(38,52,78)).apply {
+  val toggle=button("⚙  Advanced settings  ▾",Color.rgb(79,24,39)).apply {
    setOnClickListener {
     advanced.visibility=if(advanced.visibility==View.GONE)View.VISIBLE else View.GONE
     text=if(advanced.visibility==View.VISIBLE)"⚙  Hide advanced settings  ▴" else "⚙  Advanced settings  ▾"
@@ -134,7 +135,7 @@ class MainActivity : Activity() {
   card.addView(advanced)
   root.addView(card)
   root.addView(txt("Default: 1 long video + 3 different 9:16 Shorts. Advanced controls are optional.",12f,soft))
-  action=button("✦  GENERATE 4 VIDEOS",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
+  action=button("⚡  UNLEASH 4 VIDEOS",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
   shareButton=button("Share latest long video",Color.rgb(49,66,96)).apply {
    isEnabled=false
