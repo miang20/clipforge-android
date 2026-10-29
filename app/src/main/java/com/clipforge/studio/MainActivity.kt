@@ -17,7 +17,7 @@ import java.io.FileInputStream
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Effects
+import androidx.media3.transformer.Effects
 import androidx.media3.effect.Presentation
 import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
