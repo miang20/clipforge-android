@@ -8,6 +8,10 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.widget.*
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.text.InputType
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
@@ -26,19 +30,50 @@ class MainActivity : Activity() {
  private lateinit var action:Button
  private var source:Uri?=null
  private var busy=false
+ private lateinit var mode:Spinner
+ private lateinit var spinner:ProgressBar
+ private lateinit var sourceLabel:TextView
+ private var exported:File?=null
 
+ private val bg=Color.rgb(10,15,29)
+ private val panel=Color.rgb(24,33,53)
+ private val accent=Color.rgb(72,216,199)
+ private fun dp(v:Int)=(v*resources.displayMetrics.density).toInt()
+ private fun shape(color:Int, radius:Int=18)=GradientDrawable().apply { setColor(color);cornerRadius=dp(radius).toFloat() }
+ private fun txt(s:String,size:Float,color:Int=Color.WHITE,bold:Boolean=false)=TextView(this).apply {
+  text=s;textSize=size;setTextColor(color);if(bold)setTypeface(null,Typeface.BOLD);setPadding(dp(2),dp(7),dp(2),dp(7))
+ }
+ private fun button(s:String,color:Int)=Button(this).apply { text=s;setTextColor(if(color==accent)bg else Color.WHITE);background=shape(color,14);isAllCaps=false }
  override fun onCreate(savedInstanceState:Bundle?) {
   super.onCreate(savedInstanceState)
-  val root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(28,40,28,24) }
-  val title=TextView(this).apply { text="CLIPFORGE SMART STUDIO";textSize=24f }
-  val info=TextView(this).apply { text="Choose a video. The editor automatically detects visual cuts, varies clip length, shuffles scenes and exports an MP4 with original audio.";textSize=16f }
-  val select=Button(this).apply { text="SELECT VIDEO";setOnClickListener {
+  window.statusBarColor=bg;window.navigationBarColor=bg
+  val root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(22),dp(24),dp(22),dp(32));setBackgroundColor(bg) }
+  root.addView(txt("CLIPFORGE  /  PRO STUDIO",13f,accent,true))
+  root.addView(txt("Make every cut count.",29f,Color.WHITE,true))
+  root.addView(txt("Offline auto-editing • Original audio • MP4",13f,Color.LTGRAY))
+  val card=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(dp(18),dp(18),dp(18),dp(18));background=shape(panel) }
+  card.addView(txt("01   SOURCE VIDEO",13f,accent,true))
+  sourceLabel=txt("No video selected",14f,Color.LTGRAY);card.addView(sourceLabel)
+  val select=button("Choose video from phone",Color.rgb(49,66,96)).apply { setOnClickListener {
    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE);type="video/*" },100)
   }}
-  minutes=EditText(this).apply { inputType=2;setText("10");hint="Target minutes" }
-  action=Button(this).apply { text="AUTO EDIT & EXPORT MP4";isEnabled=false;setOnClickListener { startExport() } }
-  status=TextView(this).apply { text="Select your video.";textSize=15f }
-  listOf(title,info,select,minutes,action,status).forEach { root.addView(it) }
+  card.addView(select)
+  card.addView(txt("02   TARGET DURATION (MINUTES)",13f,accent,true))
+  minutes=EditText(this).apply { inputType=InputType.TYPE_CLASS_NUMBER;setText("10");setTextColor(Color.WHITE);setHintTextColor(Color.GRAY);hint="10–15 recommended";backgroundTintList=android.content.res.ColorStateList.valueOf(accent) }
+  card.addView(minutes)
+  card.addView(txt("03   EDITING STYLE",13f,accent,true))
+  mode=Spinner(this)
+  val choices=listOf("Dynamic Shuffle","Chronological Highlights","Reverse Sequence")
+  mode.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,choices)
+  card.addView(mode)
+  root.addView(card)
+  root.addView(txt("Visual scene detection identifies cuts and selects variable-length segments. It does not understand story meaning.",12f,Color.LTGRAY))
+  action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
+  root.addView(action)
+  spinner=ProgressBar(this).apply { visibility=android.view.View.GONE;isIndeterminate=true;indeterminateTintList=android.content.res.ColorStateList.valueOf(accent) }
+  root.addView(spinner)
+  status=txt("Ready when you are.",14f,Color.LTGRAY);root.addView(status)
+  root.addView(txt("Exports save to Android/data/com.clipforge.studio/files/Movies. Keep the app open while rendering.",12f,Color.GRAY))
   setContentView(ScrollView(this).apply { addView(root) })
  }
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?) {
@@ -46,7 +81,7 @@ class MainActivity : Activity() {
   if(requestCode==100 && resultCode==RESULT_OK && data?.data!=null) {
    source=data.data
    try { contentResolver.takePersistableUriPermission(source!!,Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_:Exception) {}
-   status.text="Video selected. Ready.";action.isEnabled=true
+   sourceLabel.text="Video selected: "+(data.data?.lastPathSegment?.takeLast(48) ?: "source");status.text="Ready to analyze.";action.isEnabled=true
   }
  }
  private fun message(s:String)=runOnUiThread { status.text=s }
@@ -84,7 +119,7 @@ class MainActivity : Activity() {
      Shot(s.start+(s.end-s.start)*i/n,s.start+(s.end-s.start)*(i+1)/n)
     }
    }.filter { it.end-it.start>=700 }
-   val shuffled=shots.shuffled()
+   val shuffled=when(mode.selectedItemPosition){1->shots;2->shots.reversed();else->shots.shuffled()}
    val picked=mutableListOf<Shot>();var remaining=min(target,duration)
    for(s in shuffled) {
     if(remaining<700)break
@@ -98,7 +133,7 @@ class MainActivity : Activity() {
   if(busy)return
   val uri=source?:return
   val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,30)?:10L
-  busy=true;action.isEnabled=false;message("Analyzing video...")
+  busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
   thread {
    try {
     val shots=analyze(uri,mins*60000L)
@@ -118,8 +153,8 @@ class MainActivity : Activity() {
      Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264).setAudioMimeType(MimeTypes.AUDIO_AAC)
       .addListener(object:Transformer.Listener {
        override fun onCompleted(composition:Composition,exportResult:ExportResult) {
-        busy=false;action.isEnabled=true
-        status.text="Saved: ${output.absolutePath}"
+        busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
+        exported=output;status.text="MP4 exported: ${output.absolutePath}"
        }
        override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
         busy=false;action.isEnabled=true
