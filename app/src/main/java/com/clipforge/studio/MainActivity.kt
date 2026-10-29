@@ -17,6 +17,8 @@ import java.io.FileInputStream
 import android.graphics.drawable.GradientDrawable
 import android.text.InputType
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Effects
+import androidx.media3.effect.Presentation
 import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
@@ -100,7 +102,7 @@ class MainActivity : Activity() {
   }
   card.addView(batchMode)
   root.addView(card)
-  root.addView(txt("Full Remix rearranges clips each export. Auto Fit scans the entire source for a strong continuous 15–60s passage. Vertical cropping is not yet available.",12f,Color.LTGRAY))
+  root.addView(txt("Monster Batch: 1 landscape long video + 3 vertical 9:16 Shorts. Shorts avoid overlapping footage when source length allows.",12f,Color.LTGRAY))
   action=button("Generate edited MP4",accent).apply { isEnabled=false;setOnClickListener { startExport() } }
   root.addView(action)
   shareButton=button("Share exported MP4",Color.rgb(49,66,96)).apply {
@@ -331,9 +333,11 @@ class MainActivity : Activity() {
     val jobs=if(batch) {
      val (duration,candidates)=quickScan(uri)
      val longShots=chooseShots(candidates,duration,mins*60000L,1)
-     val fast=chooseShots(candidates,duration,30000L,1)
-     val hook=chooseShots(candidates,duration,45000L,0)
      val story=chooseStory(candidates,duration)
+     val afterStory=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }
+     val fast=chooseShots(afterStory.ifEmpty { candidates },duration,30000L,1)
+     val afterFast=afterStory.filter { s->fast.none { x->s.start<x.end && s.end>x.start } }
+     val hook=chooseShots(afterFast.ifEmpty { afterStory.ifEmpty { candidates } },duration,45000L,0)
      listOf(
       "Monster_Long" to longShots,
       "Short_Energy" to fast,
@@ -375,7 +379,13 @@ class MainActivity : Activity() {
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()
    ).build()
-   EditedMediaItem.Builder(media).build()
+   val edit=EditedMediaItem.Builder(media)
+   if(name.contains("Short")) {
+    edit.setEffects(Effects(emptyList(),listOf(
+     Presentation.createForAspectRatio(9f/16f,Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
+    )))
+   }
+   edit.build()
   }
   val composition=Composition.Builder(EditedMediaItemSequence.Builder(items).build()).build()
   val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
