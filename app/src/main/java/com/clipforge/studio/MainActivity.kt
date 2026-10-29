@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -165,6 +167,43 @@ class MainActivity : Activity() {
  }
  private fun message(s:String)=runOnUiThread { status.text=s }
  private data class Shot(val start:Long,val end:Long,val score:Double=0.0)
+ private fun audioActivity(uri:Uri,duration:Long):DoubleArray {
+  val bins=64
+  val activity=DoubleArray(bins)
+  val counts=IntArray(bins)
+  val extractor=MediaExtractor()
+  try {
+   extractor.setDataSource(this,uri,null)
+   val track=(0 until extractor.trackCount).firstOrNull { i->
+    extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true
+   }?:return activity
+   extractor.selectTrack(track)
+   val buffer=java.nio.ByteBuffer.allocate(256*1024)
+   var n=0
+   while(n<1200) {
+    buffer.clear()
+    val size=extractor.readSampleData(buffer,0)
+    if(size<0)break
+    val timestamp=extractor.sampleTime
+    if(timestamp>=0) {
+     val bin=((timestamp/1000.0/duration)*bins).toInt().coerceIn(0,bins-1)
+     activity[bin]+=size.toDouble()
+     counts[bin]++
+    }
+    extractor.advance()
+    n++
+   }
+  }catch(_:Exception) {}finally { extractor.release() }
+  return DoubleArray(bins) { i->if(counts[i]>0)activity[i]/counts[i] else 0.0 }
+ }
+ private fun enrichWithAudio(candidates:List<Shot>,duration:Long,uri:Uri):List<Shot> {
+  val levels=audioActivity(uri,duration)
+  val peak=levels.maxOrNull()?.coerceAtLeast(1.0)?:1.0
+  return candidates.map { shot->
+   val bin=((shot.start.toDouble()/duration)*levels.size).toInt().coerceIn(0,levels.lastIndex)
+   shot.copy(score=shot.score+3.0*(levels[bin]/peak))
+  }
+ }
  private fun signature(b:Bitmap):IntArray {
   val small=Bitmap.createScaledBitmap(b,12,8,true)
   val px=IntArray(96);small.getPixels(px,0,12,0,0,12,8);small.recycle()
@@ -374,7 +413,9 @@ class MainActivity : Activity() {
   thread {
    try {
     val jobs=if(batch) {
-     val (duration,candidates)=quickScan(uri)
+     val (duration,visualCandidates)=quickScan(uri)
+     message("Scoring audio and visual highlights...")
+     val candidates=enrichWithAudio(visualCandidates,duration,uri)
      val longShots=chooseShots(candidates,duration,mins*60000L,1)
      val story=chooseStory(candidates,duration)
      val afterStory=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }
