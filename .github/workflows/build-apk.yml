@@ -3,6 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+permissions:
+  contents: read
+  issues: write
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -35,6 +38,22 @@ jobs:
             echo "BUILD SUCCESSFUL"
           fi
           exit "$result"
+      - name: Publish failure details to repository issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo '## Latest Android build failure'
+            echo
+            echo 'Commit: ${{ github.sha }}'
+            echo
+            echo '```text'
+            grep -E -A 12 '(^e: |^FAILURE:|^\* What went wrong:|^Execution failed|^> |error:|Could not |SDK location)' build.log | tail -100 || tail -80 build.log
+            echo '```'
+          } > failure.md
+          gh issue create --title "Automated APK build failure ${GITHUB_SHA:0:8}" --body-file failure.md || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
