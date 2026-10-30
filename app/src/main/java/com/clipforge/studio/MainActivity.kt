@@ -450,7 +450,7 @@ class MainActivity : Activity() {
   qualityChoice:Int,
   index:Int,
   saved:MutableList<Uri>,
-  retry:Boolean=false
+  retry:Int=0
  ) {
   if(index>=jobs.size) {
    busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
@@ -459,12 +459,18 @@ class MainActivity : Activity() {
    return
   }
   val (name,originalShots)=jobs[index]
-  val shots=if(retry) {
-   // Compatibility fallback: fewer, longer chronological spans for devices whose muxer rejects many joins.
-   val ordered=originalShots.sortedBy { it.start }
-   val chunk=ordered.chunked(max(1,ceil(ordered.size/8.0).toInt()))
-   chunk.map { group->Shot(group.first().start,group.last().end) }
-  } else originalShots
+  val shots=when(retry) {
+   1 -> {
+    // Limit joins without accidentally spanning gaps between unrelated shots.
+    originalShots.sortedBy { it.start }.take(8)
+   }
+   2 -> {
+    // Last compatibility attempt: one continuous segment, retaining source audio.
+    val first=originalShots.minByOrNull { it.start }!!
+    listOf(first)
+   }
+   else -> originalShots
+  }
   status.text="Rendering ${index+1}/${jobs.size}: ${name}..."
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
@@ -497,13 +503,15 @@ class MainActivity : Activity() {
      }
     }
     override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
-     if(!retry) {
-      status.text="Muxer compatibility issue; retrying with fewer segments..."
+     android.util.Log.e("ClipForgeExport","Export failed: ${name}, attempt=${retry}, code=${exportException.errorCode}",exportException)
+     if(retry<2) {
+      status.text="MP4 muxer failed; trying compatibility mode ${retry+1}/2..."
       output.delete()
-      renderJobs(uri,jobs,qualityChoice,index,saved,true)
+      renderJobs(uri,jobs,qualityChoice,index,saved,retry+1)
      } else {
       busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
-      status.text="Export ${index+1}/${jobs.size} failed after retry: ${exportException.message}. Saved ${saved.size} earlier videos."
+      val cause=exportException.cause?.message?.take(160) ?: "No additional cause"
+      status.text="Export ${index+1}/${jobs.size} failed (code ${exportException.errorCode}): $cause. Saved ${saved.size} videos."
      }
     }
    }).build()
