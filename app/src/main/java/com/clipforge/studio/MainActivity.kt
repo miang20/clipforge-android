@@ -465,9 +465,17 @@ class MainActivity : Activity() {
     originalShots.sortedBy { it.start }.take(8)
    }
    2 -> {
-    // Last compatibility attempt: one continuous segment, retaining source audio.
-    val first=originalShots.minByOrNull { it.start }!!
-    listOf(first)
+    // Full-duration compatibility fallback: one continuous passage of the requested length.
+    // Never silently replace a 15-minute request with a 1-minute clip.
+    val requestedMs=originalShots.sumOf { it.end-it.start }
+    val retriever=MediaMetadataRetriever()
+    val sourceDuration=try {
+     retriever.setDataSource(this,uri)
+     retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:requestedMs
+    } finally { retriever.release() }
+    val length=min(requestedMs,sourceDuration)
+    val start=if(name.contains("Short")) originalShots.minOf { it.start }.coerceAtMost((sourceDuration-length).coerceAtLeast(0L)) else 0L
+    listOf(Shot(start,start+length))
    }
    else -> originalShots
   }
