@@ -194,7 +194,11 @@ class RenderService:Service() {
   val (name,selected)=jobs[index]
   if(selected.isEmpty()) {finish("No clips for $name");return}
   val shots=when(attempt) {
-   1->selected.sortedBy { it.start }.take(8)
+   1->{
+    val r=MediaMetadataRetriever()
+    val duration=try {r.setDataSource(this,uri);r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L}finally {r.release()}
+    listOf(Shot(0L,min(selected.sumOf {it.end-it.start},duration)))
+   }
    2->{
     val r=MediaMetadataRetriever()
     val duration=try {r.setDataSource(this,uri);r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L}finally {r.release()}
@@ -221,9 +225,29 @@ class RenderService:Service() {
     .setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object:Transformer.Listener {
     override fun onCompleted(composition:Composition,exportResult:ExportResult) {
      thread {
-      val success=try {saveToGallery(output)}catch(e:Exception){false}
-      output.delete()
-      handler.post {render(uri,jobs,index+1,0,saved+if(success)1 else 0)}
+      val expected=shots.sumOf {it.end-it.start}
+      val actual=try {
+       val check=MediaMetadataRetriever()
+       try {
+        check.setDataSource(output.absolutePath)
+        check.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L
+       }finally {check.release()}
+      }catch(_:Exception){0L}
+      if(actual<=0L || abs(actual-expected)>max(2000L,expected/20L)) {
+       android.util.Log.e("ClipForge","Duration mismatch $name expected=$expected actual=$actual attempt=$attempt")
+       output.delete()
+       handler.post {
+        if(attempt<2)render(uri,jobs,index,attempt+1,saved)
+        else finish("Duration mismatch: $name expected ${expected/1000}s got ${actual/1000}s; saved $saved/4")
+       }
+      }else{
+       val success=try {saveToGallery(output)}catch(e:Exception){false}
+       output.delete()
+       handler.post {
+        if(success)render(uri,jobs,index+1,0,saved+1)
+        else finish("Gallery save failed: $name; saved $saved/4")
+       }
+      }
      }
     }
     override fun onError(composition:Composition,exportResult:ExportResult,e:ExportException) {
