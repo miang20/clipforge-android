@@ -449,7 +449,8 @@ class MainActivity : Activity() {
   jobs:List<Pair<String,List<Shot>>>,
   qualityChoice:Int,
   index:Int,
-  saved:MutableList<Uri>
+  saved:MutableList<Uri>,
+  retry:Boolean=false
  ) {
   if(index>=jobs.size) {
    busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
@@ -457,7 +458,13 @@ class MainActivity : Activity() {
    status.text="Batch complete: ${saved.size}/${jobs.size} videos saved in Movies/ClipForge"
    return
   }
-  val (name,shots)=jobs[index]
+  val (name,originalShots)=jobs[index]
+  val shots=if(retry) {
+   // Compatibility fallback: fewer, longer chronological spans for devices whose muxer rejects many joins.
+   val ordered=originalShots.sortedBy { it.start }
+   val chunk=ordered.chunked(max(1,ceil(ordered.size/8.0).toInt()))
+   chunk.map { group->Shot(group.first().start,group.last().end) }
+  } else originalShots
   status.text="Rendering ${index+1}/${jobs.size}: ${name}..."
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
@@ -490,8 +497,14 @@ class MainActivity : Activity() {
      }
     }
     override fun onError(composition:Composition,exportResult:ExportResult,exportException:ExportException) {
-     busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
-     status.text="Export ${index+1}/${jobs.size} failed: ${exportException.message}. Saved ${saved.size} earlier videos."
+     if(!retry) {
+      status.text="Muxer compatibility issue; retrying with fewer segments..."
+      output.delete()
+      renderJobs(uri,jobs,qualityChoice,index,saved,true)
+     } else {
+      busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE
+      status.text="Export ${index+1}/${jobs.size} failed after retry: ${exportException.message}. Saved ${saved.size} earlier videos."
+     }
     }
    }).build()
    activeTransformer?.start(composition,output.absolutePath)
