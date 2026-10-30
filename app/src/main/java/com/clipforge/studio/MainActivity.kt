@@ -397,52 +397,16 @@ class MainActivity : Activity() {
   } finally { r.release() }
  }
  private fun startExport() {
-  if(busy)return
   val uri=source?:return
   val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,180)?:10L
-  val isShort=outputType.selectedItemPosition==1
-  val autoShort=isShort && shortSeconds.selectedItemPosition==0
-  val targetMs=if(isShort) {
-   if(autoShort) 60000L else listOf(15L,30L,45L,60L)[shortSeconds.selectedItemPosition-1]*1000L
-  } else mins*60000L
-  val style=mode.selectedItemPosition
-  val batch=batchMode.isChecked
-  val qualityChoice=quality.selectedItemPosition
-  publicVideo=null;shareButton.isEnabled=false
-  busy=true;action.isEnabled=false;spinner.visibility=android.view.View.VISIBLE;message("Analyzing video...")
-  thread {
-   try {
-    val jobs=if(batch) {
-     val (duration,visualCandidates)=quickScan(uri)
-     message("Scoring audio and visual highlights...")
-     val candidates=enrichWithAudio(visualCandidates,duration,uri)
-     val longShots=chooseShots(candidates,duration,mins*60000L,1)
-     val story=chooseStory(candidates,duration)
-     val afterStory=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }
-     val fast=chooseShots(afterStory.ifEmpty { candidates },duration,30000L,1)
-     val afterFast=afterStory.filter { s->fast.none { x->s.start<x.end && s.end>x.start } }
-     val hook=chooseShots(afterFast.ifEmpty { afterStory.ifEmpty { candidates } },duration,45000L,0)
-     listOf(
-      "Monster_Long" to longShots,
-      "Short_Energy" to fast,
-      "Short_Curiosity" to hook,
-      "Short_Story" to story
-     )
-    } else {
-     listOf((if(isShort)"Monster_Short" else "Monster_Long") to
-      (if(autoShort)analyzeAutoShort(uri,style) else analyze(uri,targetMs,style)))
-    }
-    require(jobs.all { it.second.isNotEmpty() }) { "Not enough usable scenes" }
-    val freeSpace=(getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir).usableSpace
-    require(freeSpace>300L*1024*1024) { "Please free at least 300 MB before batch export" }
-    runOnUiThread {
-     summary.text="EXPORT PLAN  •  ${jobs.size} MP4 videos  •  ${jobs.sumOf { it.second.size }} selected segments"
-    }
-    runOnUiThread { renderJobs(uri,jobs,qualityChoice,0,mutableListOf()) }
-   }catch(e:Exception) {
-    runOnUiThread { busy=false;action.isEnabled=true;spinner.visibility=android.view.View.GONE;status.text="Error: ${e.message}" }
-   }
+  val intent=Intent(this,RenderService::class.java).apply {
+   putExtra("source",uri.toString())
+   putExtra("minutes",mins)
   }
+  try {
+   if(Build.VERSION.SDK_INT>=26)startForegroundService(intent) else startService(intent)
+   status.text="Rendering started in background. You can use other apps; follow notification for progress."
+  }catch(e:Exception) {status.text="Unable to start background export: ${e.message}"}
  }
  private fun renderJobs(
   uri:Uri,
