@@ -1,4 +1,5 @@
 name: Build Android APK
+# Rebuild full ClipForge APK with duration verification and background rendering
 on:
   workflow_dispatch:
   push:
