@@ -49,17 +49,22 @@ class RenderService:Service() {
   startForeground(notificationId,notification("Preparing 4 videos..."))
   val uri=Uri.parse(intent.getStringExtra("source")?:return START_NOT_STICKY)
   val minutes=intent.getLongExtra("minutes",10L).coerceIn(1,180)
+  val shortLength=intent.getLongExtra("shortSeconds",0L).let { if(it==0L)30L else it.coerceIn(15,60) }
+  val remixStyle=intent.getIntExtra("remixStyle",0).coerceIn(0,3)
+  val batch=intent.getBooleanExtra("batch",true)
   thread {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=enrichWithAudio(visual,duration,uri)
-    val long=chooseShots(candidates,duration,minutes*60000L,1)
+    val long=chooseShots(candidates,duration,minutes*60000L,remixStyle)
     val story=chooseStory(candidates,duration)
     val other=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }.ifEmpty { candidates }
-    val energy=chooseShots(other,duration,30000L,1)
-    val curiosity=chooseShots(other,duration,45000L,0)
-    val jobs=listOf("Monster_Long" to long,"Short_Energy" to energy,
-     "Short_Curiosity" to curiosity,"Short_Story" to story)
+    val energy=chooseShots(other,duration,shortLength*1000L,1)
+    val curiosity=chooseShots(other,duration,shortLength*1000L,0)
+    val storyShort=chooseShots(story,duration,shortLength*1000L,0)
+    val jobs=if(batch) listOf("Monster_Long" to long,"Short_Energy" to energy,
+     "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
+     else listOf("Monster_Long" to long)
     handler.post { render(uri,jobs,0,0,0) }
    }catch(e:Exception){finish("Analysis failed: ${e.message}")}
   }
@@ -190,7 +195,7 @@ class RenderService:Service() {
  }
 
  private fun render(uri:Uri,jobs:List<Pair<String,List<Shot>>>,index:Int,attempt:Int,saved:Int) {
-  if(index>=jobs.size) {finish("Complete: $saved/4 videos saved in Movies/ClipForge");return}
+  if(index>=jobs.size) {finish("Complete: $saved/${jobs.size} videos saved in Movies/ClipForge");return}
   val (name,selected)=jobs[index]
   if(selected.isEmpty()) {finish("No clips for $name");return}
   val shots=when(attempt) {
@@ -211,7 +216,7 @@ class RenderService:Service() {
    }
    else->selected
   }
-  notifyStatus("Rendering ${index+1}/4: $name (attempt ${attempt+1})")
+  notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   require(shots.all { it.end>it.start }) { "Invalid segment duration" }
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
