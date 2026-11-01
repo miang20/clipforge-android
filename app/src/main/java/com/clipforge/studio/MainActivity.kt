@@ -401,7 +401,7 @@ class MainActivity : Activity() {
   val intent=Intent(this,RenderService::class.java).apply {
    putExtra("source",uri.toString())
    putExtra("minutes",mins)
-   putExtra("shortSeconds",when(shortSeconds.selectedItemPosition){0->15L;1->30L;2->45L;else->60L})
+   putExtra("shortSeconds",when(shortSeconds.selectedItemPosition){0->0L;1->15L;2->30L;3->45L;else->60L})
    putExtra("remixStyle",mode.selectedItemPosition)
    putExtra("quality",quality.selectedItemPosition)
    putExtra("batch",batchMode.isChecked)
