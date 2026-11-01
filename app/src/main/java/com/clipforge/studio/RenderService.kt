@@ -196,9 +196,12 @@ class RenderService:Service() {
   if(selected.isEmpty()) {finish("No clips for $name");return}
   val shots=when(attempt) {
    1->{
+    // Avoid silently shrinking output to the first few clips.
+    // Retry a chronological source passage with the full requested duration.
     val r=MediaMetadataRetriever()
     val duration=try {r.setDataSource(this,uri);r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L}finally {r.release()}
-    listOf(Shot(0L,min(selected.sumOf {it.end-it.start},duration)))
+    val target=selected.sumOf {it.end-it.start}
+    listOf(Shot(0L,min(target,duration)))
    }
    2->{
     val r=MediaMetadataRetriever()
