@@ -213,6 +213,7 @@ class RenderService:Service() {
    else->selected
   }
   notifyStatus("Rendering ${index+1}/4: $name (attempt ${attempt+1})")
+  require(shots.all { it.end>it.start }) { "Invalid segment duration" }
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
