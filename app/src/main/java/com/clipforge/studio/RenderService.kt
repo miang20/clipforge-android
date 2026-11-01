@@ -9,6 +9,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
+import androidx.media3.common.Effects
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.effect.Presentation
@@ -222,6 +223,7 @@ class RenderService:Service() {
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
    val builder=EditedMediaItem.Builder(media)
+   if(name.startsWith("Short_")) builder.setEffects(Effects(emptyList(), listOf(Presentation.createForAspectRatio(9f/16f, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))))
    builder.build()
   }
   val composition=Composition.Builder(EditedMediaItemSequence.Builder(items).build()).build()
