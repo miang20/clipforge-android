@@ -401,6 +401,10 @@ class MainActivity : Activity() {
   val intent=Intent(this,RenderService::class.java).apply {
    putExtra("source",uri.toString())
    putExtra("minutes",mins)
+   putExtra("shortSeconds",when(shortSeconds.selectedItemPosition){0->15L;1->30L;2->45L;else->60L})
+   putExtra("remixStyle",mode.selectedItemPosition)
+   putExtra("quality",quality.selectedItemPosition)
+   putExtra("batch",batchMode.isChecked)
   }
   try {
    if(Build.VERSION.SDK_INT>=26)startForegroundService(intent) else startService(intent)
