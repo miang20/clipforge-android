@@ -257,7 +257,7 @@ class RenderService:Service() {
   val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
   val output=File(dir,"${name}_${System.currentTimeMillis()}.mp4")
   try {
-   transformer=Transformer.Builder(this).setVideoMimeType(MimeTypes.VIDEO_H264)
+   transformer=Transformer.Builder(this).setMaxDelayBetweenMuxerSamplesMs(120_000L).setVideoMimeType(MimeTypes.VIDEO_H264)
     .setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object:Transformer.Listener {
     override fun onCompleted(composition:Composition,exportResult:ExportResult) {
      thread {
@@ -290,7 +290,7 @@ class RenderService:Service() {
      android.util.Log.e("ClipForge","Export $name attempt $attempt code ${e.errorCode}",e)
      output.delete()
      if(attempt<1)render(uri,jobs,index,attempt+1,saved)
-     else finish("Export failed: $name (error ${e.errorCode}), saved $saved/4")
+     else finish("Export failed: $name (${e.getErrorCodeName()} / ${e.errorCode}), saved $saved/${jobs.size}")
     }
    }).build()
    transformer?.start(composition,output.absolutePath)
