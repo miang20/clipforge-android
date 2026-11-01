@@ -257,7 +257,7 @@ class RenderService:Service() {
   val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
   val output=File(dir,"${name}_${System.currentTimeMillis()}.mp4")
   try {
-   transformer=Transformer.Builder(this).setMaxDelayBetweenMuxerSamplesMs(120_000_000L).setVideoMimeType(MimeTypes.VIDEO_H264)
+   transformer=Transformer.Builder(this).setMaxDelayBetweenMuxerSamplesMs(androidx.media3.common.C.TIME_UNSET).setVideoMimeType(MimeTypes.VIDEO_H264)
     .setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object:Transformer.Listener {
     override fun onCompleted(composition:Composition,exportResult:ExportResult) {
      thread {
