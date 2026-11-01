@@ -20,7 +20,6 @@ import android.graphics.drawable.GradientDrawable
 import android.view.View
 import android.text.InputType
 import androidx.media3.common.MediaItem
-import androidx.media3.common.Effects
 import androidx.media3.effect.Presentation
 import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
@@ -449,11 +448,6 @@ class MainActivity : Activity() {
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()
    ).build()
    val edit=EditedMediaItem.Builder(media)
-   if(name.contains("Short")) {
-    edit.setEffects(Effects(emptyList(),listOf(
-     Presentation.createForAspectRatio(9f/16f,Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
-    )))
-   }
    edit.build()
   }
   val composition=Composition.Builder(EditedMediaItemSequence.Builder(items).build()).build()
