@@ -71,9 +71,9 @@ class RenderService:Service() {
   return START_STICKY
  }
  private fun audioActivity(uri:Uri,duration:Long):DoubleArray {
-  val bins=64
+  // Sample the full timeline rather than only the first 1200 audio packets.
+  val bins=96
   val activity=DoubleArray(bins)
-  val counts=IntArray(bins)
   val extractor=MediaExtractor()
   try {
    extractor.setDataSource(this,uri,null)
@@ -82,22 +82,25 @@ class RenderService:Service() {
    }?:return activity
    extractor.selectTrack(track)
    val buffer=java.nio.ByteBuffer.allocate(256*1024)
-   var n=0
-   while(n<1200) {
-    buffer.clear()
-    val size=extractor.readSampleData(buffer,0)
-    if(size<0)break
-    val timestamp=extractor.sampleTime
-    if(timestamp>=0) {
-     val bin=((timestamp/1000.0/duration)*bins).toInt().coerceIn(0,bins-1)
-     activity[bin]+=size.toDouble()
-     counts[bin]++
+   for(bin in 0 until bins) {
+    val sampleUs=((duration.toDouble()*(bin+0.5)/bins)*1000.0).toLong()
+    extractor.seekTo(sampleUs,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+    var bytes=0.0
+    var count=0
+    while(count<12) {
+     buffer.clear()
+     val size=extractor.readSampleData(buffer,0)
+     if(size<0)break
+     bytes+=size.toDouble()
+     count++
+     if(!extractor.advance())break
     }
-    extractor.advance()
-    n++
+    activity[bin]=if(count>0)bytes/count else 0.0
    }
-  }catch(_:Exception) {}finally { extractor.release() }
-  return DoubleArray(bins) { i->if(counts[i]>0)activity[i]/counts[i] else 0.0 }
+  }catch(e:Exception) {
+   android.util.Log.w("ClipForge","Audio analysis unavailable",e)
+  }finally { extractor.release() }
+  return activity
  }
  private fun enrichWithAudio(candidates:List<Shot>,duration:Long,uri:Uri):List<Shot> {
   val levels=audioActivity(uri,duration)
