@@ -22,6 +22,7 @@ class RenderService:Service() {
  private data class Shot(val start:Long,val end:Long,val score:Double=0.0)
  private val handler=Handler(Looper.getMainLooper())
  private var transformer:Transformer?=null
+ private var exportWatchdog:Runnable?=null
  private val channel="clipforge_render"
  private val notificationId=91
  private val running=AtomicBoolean(false)
@@ -242,6 +243,8 @@ class RenderService:Service() {
   val (name,selected)=jobs[index]
   if(selected.isEmpty()) {finish("No clips for $name");return}
   val shots=selected
+  exportWatchdog?.let { handler.removeCallbacks(it) }
+  exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
   val items=shots.map { s->
@@ -260,6 +263,8 @@ class RenderService:Service() {
    transformer=Transformer.Builder(this).setMaxDelayBetweenMuxerSamplesMs(androidx.media3.common.C.TIME_UNSET).setVideoMimeType(MimeTypes.VIDEO_H264)
     .setAudioMimeType(MimeTypes.AUDIO_AAC).addListener(object:Transformer.Listener {
     override fun onCompleted(composition:Composition,exportResult:ExportResult) {
+     exportWatchdog?.let { handler.removeCallbacks(it) }
+     exportWatchdog=null
      thread {
       val expected=shots.sumOf {it.end-it.start}
       val actual=try {
@@ -287,6 +292,8 @@ class RenderService:Service() {
      }
     }
     override fun onError(composition:Composition,exportResult:ExportResult,e:ExportException) {
+     exportWatchdog?.let { handler.removeCallbacks(it) }
+     exportWatchdog=null
      android.util.Log.e("ClipForge","Export $name attempt $attempt code ${e.errorCode}",e)
      output.delete()
      if(attempt<1)render(uri,jobs,index,attempt+1,saved)
@@ -294,6 +301,34 @@ class RenderService:Service() {
     }
    }).build()
    transformer?.start(composition,output.absolutePath)
+   val active=transformer
+   val progress=ProgressHolder()
+   var lastPercent=-1
+   var lastMovement=android.os.SystemClock.elapsedRealtime()
+   val watchdog=object:Runnable {
+    override fun run() {
+     if(transformer!==active || !running.get())return
+     val state=try {active?.getProgress(progress)?:Transformer.PROGRESS_STATE_NOT_STARTED}
+      catch(e:Exception) {android.util.Log.w("ClipForge","Progress unavailable",e);Transformer.PROGRESS_STATE_UNAVAILABLE}
+     val now=android.os.SystemClock.elapsedRealtime()
+     if(state==Transformer.PROGRESS_STATE_AVAILABLE && progress.progress>lastPercent) {
+      lastPercent=progress.progress
+      lastMovement=now
+      notifyStatus("Rendering ${index+1}/${jobs.size}: $name — ${progress.progress}%")
+     }
+     if(now-lastMovement>180_000L) {
+      android.util.Log.e("ClipForge","Export stalled: $name at $lastPercent%")
+      exportWatchdog=null
+      try {active?.cancel()}catch(e:Exception){android.util.Log.e("ClipForge","Cancel failed",e)}
+      output.delete()
+      finish("Export stalled for 3 minutes: $name. Please try another source format.")
+      return
+     }
+     handler.postDelayed(this,5000L)
+    }
+   }
+   exportWatchdog=watchdog
+   handler.postDelayed(watchdog,5000L)
   }catch(e:Exception){
    output.delete()
    if(attempt<1)render(uri,jobs,index,attempt+1,saved)
@@ -317,6 +352,8 @@ class RenderService:Service() {
  }
  private fun finish(message:String) {
   handler.post {
+   exportWatchdog?.let { handler.removeCallbacks(it) }
+   exportWatchdog=null
    running.set(false)
    notifyStatus(message)
    stopForeground(STOP_FOREGROUND_DETACH)
