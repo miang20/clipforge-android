@@ -155,24 +155,58 @@ class RenderService:Service() {
   }finally { retriever.release() }
  }
  private fun chooseShots(candidates:List<Shot>,duration:Long,target:Long,style:Int):List<Shot> {
-  // Timeline-aware selection: give the beginning, middle and end a fair chance.
-  val bins=8
-  val grouped=(0 until bins).map { bin->
-   candidates.filter { s-> ((s.start.toDouble()/duration)*bins).toInt().coerceIn(0,bins-1)==bin }
-    .let { if(style==0)it.shuffled() else it.sortedByDescending { s->s.score } }
+  // Select non-overlapping segments across the entire source; never duplicate footage.
+  if(duration<=0L || target<=0L)return emptyList()
+  val bins=12
+  val groups=(0 until bins).map { bin->
+   val group=candidates.filter { s->
+    s.end>s.start && ((s.start.toDouble()/duration)*bins).toInt().coerceIn(0,bins-1)==bin
+   }
+   if(style==0)group.shuffled() else group.sortedByDescending { it.score }
   }
   val ranked=mutableListOf<Shot>()
   var layer=0
-  while(grouped.any { it.size>layer }) {
-   for(group in grouped)if(group.size>layer)ranked.add(group[layer])
+  while(groups.any { it.size>layer }) {
+   for(group in groups)if(group.size>layer)ranked.add(group[layer])
    layer++
   }
   val chosen=mutableListOf<Shot>()
   var remaining=min(target,duration)
   for(s in ranked) {
    if(remaining<1000L)break
-   val len=min(s.end-s.start,remaining)
-   if(len>=1000L) { chosen.add(s.copy(end=s.start+len));remaining-=len }
+   val free=mutableListOf(s.start.coerceAtLeast(0L) to s.end.coerceAtMost(duration))
+   for(used in chosen) {
+    val next=mutableListOf<Pair<Long,Long>>()
+    for((start,end) in free) {
+     if(used.end<=start || used.start>=end)next.add(start to end)
+     else {
+      if(used.start-start>=1000L)next.add(start to used.start)
+      if(end-used.end>=1000L)next.add(used.end to end)
+     }
+    }
+    free.clear()
+    free.addAll(next)
+   }
+   for((start,end) in free) {
+    val length=min(end-start,remaining)
+    if(length>=1000L) {
+     chosen.add(Shot(start,start+length,s.score))
+     remaining-=length
+    }
+    if(remaining<1000L)break
+   }
+  }
+  // Fill any remaining time from unselected source intervals, maintaining exact duration.
+  if(remaining>=1000L) {
+   val sorted=chosen.sortedBy { it.start }
+   var cursor=0L
+   for(s in sorted+Shot(duration,duration)) {
+    val available=s.start-cursor
+    val take=min(available,remaining)
+    if(take>=1000L) {chosen.add(Shot(cursor,cursor+take));remaining-=take}
+    cursor=max(cursor,s.end)
+    if(remaining<1000L)break
+   }
   }
   return when(style) {
    2->chosen.sortedBy { it.start }
