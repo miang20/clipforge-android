@@ -106,8 +106,14 @@ class RenderService:Service() {
   val levels=audioActivity(uri,duration)
   val peak=levels.maxOrNull()?.coerceAtLeast(1.0)?:1.0
   return candidates.map { shot->
-   val bin=((shot.start.toDouble()/duration)*levels.size).toInt().coerceIn(0,levels.lastIndex)
-   shot.copy(score=shot.score+3.0*(levels[bin]/peak))
+   val first=((shot.start.toDouble()/duration)*levels.size).toInt().coerceIn(0,levels.lastIndex)
+   val last=((shot.end.toDouble()/duration)*levels.size).toInt().coerceIn(first,levels.lastIndex)
+   val window=levels.slice(first..last)
+   val mean=window.average()/peak
+   val localPeak=(window.maxOrNull()?:0.0)/peak
+   // Highlight impact and sudden audio peaks; avoid scoring only the clip's first instant.
+   val impact=if(first>0)max(0.0,(levels[first]-levels[first-1])/peak) else 0.0
+   shot.copy(score=shot.score+2.0*mean+2.0*localPeak+1.5*impact)
   }
  }
  private fun signature(b:Bitmap):IntArray {
