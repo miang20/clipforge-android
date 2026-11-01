@@ -241,26 +241,9 @@ class RenderService:Service() {
   if(index>=jobs.size) {finish("Complete: $saved/${jobs.size} videos saved in Movies/ClipForge");return}
   val (name,selected)=jobs[index]
   if(selected.isEmpty()) {finish("No clips for $name");return}
-  val shots=when(attempt) {
-   1->{
-    // Avoid silently shrinking output to the first few clips.
-    // Retry a chronological source passage with the full requested duration.
-    val r=MediaMetadataRetriever()
-    val duration=try {r.setDataSource(this,uri);r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L}finally {r.release()}
-    val target=selected.sumOf {it.end-it.start}
-    listOf(Shot(0L,min(target,duration)))
-   }
-   2->{
-    val r=MediaMetadataRetriever()
-    val duration=try {r.setDataSource(this,uri);r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L}finally {r.release()}
-    val requested=selected.sumOf {it.end-it.start}
-    val length=min(requested,duration)
-    listOf(Shot(0L,length))
-   }
-   else->selected
-  }
+  val shots=selected
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
-  require(shots.all { it.end>it.start }) { "Invalid segment duration" }
+  if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
@@ -290,7 +273,7 @@ class RenderService:Service() {
        android.util.Log.e("ClipForge","Duration mismatch $name expected=$expected actual=$actual attempt=$attempt")
        output.delete()
        handler.post {
-        if(attempt<2)render(uri,jobs,index,attempt+1,saved)
+        if(attempt<1)render(uri,jobs,index,attempt+1,saved)
         else finish("Duration mismatch: $name expected ${expected/1000}s got ${actual/1000}s; saved $saved/4")
        }
       }else{
@@ -306,14 +289,14 @@ class RenderService:Service() {
     override fun onError(composition:Composition,exportResult:ExportResult,e:ExportException) {
      android.util.Log.e("ClipForge","Export $name attempt $attempt code ${e.errorCode}",e)
      output.delete()
-     if(attempt<2)render(uri,jobs,index,attempt+1,saved)
+     if(attempt<1)render(uri,jobs,index,attempt+1,saved)
      else finish("Export failed: $name (error ${e.errorCode}), saved $saved/4")
     }
    }).build()
    transformer?.start(composition,output.absolutePath)
   }catch(e:Exception){
    output.delete()
-   if(attempt<2)render(uri,jobs,index,attempt+1,saved)
+   if(attempt<1)render(uri,jobs,index,attempt+1,saved)
    else finish("Export failed: ${e.message}, saved $saved/4")
   }
  }
