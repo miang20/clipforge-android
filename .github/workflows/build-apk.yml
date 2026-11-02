@@ -3,7 +3,7 @@ name: Build Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, 'fix/native-muxer-render-20261102', 'feature/scene-shuffle-zoom-20261102']
+    branches: [main, 'fix/native-muxer-render-20261102', 'feature/scene-shuffle-zoom-20261102', 'fix/av-sync-remux-20261102']
 permissions:
   contents: write
   issues: write
