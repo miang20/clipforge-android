@@ -18,7 +18,7 @@ def probe(path):
 
 def scenes(path,duration):
     # Scene changes are hints only; preserve complete 12-50s events.
-    p=subprocess.run(["ffmpeg","-hide_banner","-i",str(path),"-vf","fps=1,scale=320:-1,select=gt(scene\\,0.35)","-an","-f","null","-"],capture_output=True,text=True)
+    p=subprocess.run(["ffmpeg","-hide_banner","-i",str(path),"-vf","scale=320:-1,select=gt(scene\\,0.35),showinfo","-an","-f","null","-"],capture_output=True,text=True)
     import re
     stamps=[float(x) for x in re.findall(r"pts_time:([0-9.]+)",p.stderr)]
     return sorted(set([0.,duration]+[t for t in stamps if 0<t<duration]))
@@ -39,8 +39,10 @@ def candidates(path,duration):
     ranked=[]
     for start,end in windows[:150]:
         try:
-            output=run("ffmpeg","-hide_banner","-ss",start,"-t",min(6,end-start),"-i",path,"-vn","-af","volumedetect","-f","null","-")
-            score=0.
+            p=subprocess.run(["ffmpeg","-hide_banner","-ss",str(start),"-t",str(min(6,end-start)),"-i",str(path),"-vn","-af","volumedetect","-f","null","-"],capture_output=True,text=True,timeout=30)
+            import re
+            m=re.search(r"mean_volume:\s*(-?[0-9.]+) dB",p.stderr)
+            score=float(m.group(1)) if m else -60.
         except Exception: score=0.
         ranked.append((score,start,end))
     return ranked
@@ -73,7 +75,7 @@ def produce(upload,progress=gr.Progress()):
     progress(.1,desc="Scanning entire video")
     pool=candidates(src,duration)
     # Keep original chronology WITHIN events. Shuffle only complete events.
-    random.Random(42).shuffle(pool)
+    pool.sort(key=lambda item:item[0],reverse=True)
     selected=[]; used=[]
     target=min(duration*.68,900)
     for item in pool:
@@ -87,13 +89,13 @@ def produce(upload,progress=gr.Progress()):
     shorts=[]
     for i in range(3):
         # Different nonoverlapping event groups, no truncated endings.
-        shots=selected[i::3][:2]
-        if not shots: shots=selected[:1]
+        shots=[s for s in selected if s[2]-s[1]<=60][i:i+1]
+        if not shots: raise gr.Error("Not enough distinct complete moments for three Shorts")
         out=folder/f"ClipForge_Short_{i+1}.mp4"
         progress(.40+i*.18,desc=f"Rendering short {i+1}/3")
         render(src,shots,out,vertical=True);shorts.append(str(out))
     progress(1.,desc="Complete")
-    return str(long),*shorts,"Done: 1 long + 3 shorts. Scene detection is heuristic; verify story quality before publishing."
+    return str(long),*shorts,"Done: 1 long + 3 shorts. Scene scoring is heuristic, not semantic story comprehension."
 
 with gr.Blocks(title="ClipForge Cloud MVP") as app:
     gr.Markdown("# ClipForge Cloud — One upload, four exports\nCPU-based prototype. No paid API. Keep the Colab session open while processing.")
