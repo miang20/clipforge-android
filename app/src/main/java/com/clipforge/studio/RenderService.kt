@@ -57,7 +57,7 @@ class RenderService:Service() {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=enrichWithAudio(visual,duration,uri)
-    val long=chooseLongExportShots(duration,(duration*0.70).toLong().coerceAtMost(15*60000L),remixStyle)
+    val long=chooseSceneRemix(candidates,duration)
     val story=chooseStory(candidates,duration)
     val other=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }.ifEmpty { candidates }
     val energy=chooseCompleteShort(candidates,duration,emptyList())
@@ -129,8 +129,8 @@ class RenderService:Service() {
   try {
    val duration=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
    require(duration>=15000L) { "Video must be at least 15 seconds" }
-   // One bounded scan for the entire batch. At most 100 frame requests.
-   val step=max(1000L,ceil(duration/100.0).toLong())
+   // Scan the whole timeline with up to 450 frame samples to detect short events.
+   val step=max(500L,ceil(duration/450.0).toLong())
    val marks=mutableListOf(0L)
    val activity=mutableListOf<Pair<Long,Double>>()
    var previous:IntArray?=null
@@ -224,6 +224,15 @@ class RenderService:Service() {
    else->chosen.shuffled()
   }
  }
+ private fun chooseSceneRemix(candidates:List<Shot>,duration:Long):List<Shot> {
+  // Shuffle scene candidates across the entire source, not fixed 30/60s chunks.
+  // Keep every chosen scene internally contiguous to avoid mixing event audio.
+  val ordered=candidates.filter { it.end-it.start>=1000L }
+   .sortedBy { it.start }.take(250).shuffled()
+  require(ordered.size>=2) { "Not enough distinct scenes for a remix" }
+  val mixed=if(ordered.zipWithNext().all { (a,b)->a.start<b.start }) ordered.reversed() else ordered
+  return mixed
+ }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int):List<Shot> {
   // Media3 may reinitialize codecs at each clip boundary. For long-form
   // exports, use fewer, longer, source-contiguous passages instead of
@@ -286,6 +295,30 @@ class RenderService:Service() {
   exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
+  if(name=="Monster_Long") {
+   val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
+   val output=File(dir,"${name}_${System.currentTimeMillis()}.mp4")
+   thread {
+    try {
+     notifyStatus("Rendering long with native stream copy — no encoder")
+     NativeRemuxer.export(this,uri,output,shots.map { NativeRemuxer.Range(it.start,it.end) })
+     val savedOk=saveToGallery(output)
+     output.delete()
+     if(!savedOk)error("Gallery save failed")
+     handler.post { render(uri,jobs,index+1,0,saved+1) }
+    }catch(e:Exception) {
+     android.util.Log.e("ClipForge","Native remux failed",e)
+     output.delete()
+     handler.post {
+      if(attempt==0) {
+       notifyStatus("Native remux unavailable; retrying with compatible export")
+       finish("Native remux failed: ${e.message}. Original source preserved.")
+      } else finish("Long export failed: ${e.message}")
+     }
+    }
+   }
+   return
+  }
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
