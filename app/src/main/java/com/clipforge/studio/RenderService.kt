@@ -57,7 +57,7 @@ class RenderService:Service() {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=enrichWithAudio(visual,duration,uri)
-    val long=chooseLongExportShots(duration,(duration*0.70).toLong().coerceAtMost(15*60000L),remixStyle)
+    val long=chooseSceneRemix(candidates,duration)
     val story=chooseStory(candidates,duration)
     val other=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }.ifEmpty { candidates }
     val energy=chooseCompleteShort(candidates,duration,emptyList())
@@ -129,8 +129,8 @@ class RenderService:Service() {
   try {
    val duration=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
    require(duration>=15000L) { "Video must be at least 15 seconds" }
-   // One bounded scan for the entire batch. At most 100 frame requests.
-   val step=max(1000L,ceil(duration/100.0).toLong())
+   // Scan the whole timeline with up to 450 frame samples to detect short events.
+   val step=max(500L,ceil(duration/450.0).toLong())
    val marks=mutableListOf(0L)
    val activity=mutableListOf<Pair<Long,Double>>()
    var previous:IntArray?=null
@@ -223,6 +223,15 @@ class RenderService:Service() {
    3->chosen.sortedByDescending { it.start }
    else->chosen.shuffled()
   }
+ }
+ private fun chooseSceneRemix(candidates:List<Shot>,duration:Long):List<Shot> {
+  // Shuffle scene candidates across the entire source, not fixed 30/60s chunks.
+  // Keep every chosen scene internally contiguous to avoid mixing event audio.
+  val ordered=candidates.filter { it.end-it.start>=1000L }
+   .sortedBy { it.start }.take(250).shuffled()
+  require(ordered.size>=2) { "Not enough distinct scenes for a remix" }
+  val mixed=if(ordered.zipWithNext().all { (a,b)->a.start<b.start }) ordered.reversed() else ordered
+  return mixed
  }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int):List<Shot> {
   // Media3 may reinitialize codecs at each clip boundary. For long-form
