@@ -57,12 +57,12 @@ class RenderService:Service() {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=enrichWithAudio(visual,duration,uri)
-    val long=chooseLongExportShots(duration,minutes*60000L,remixStyle)
+    val long=chooseLongExportShots(duration,(duration*0.70).toLong().coerceAtMost(15*60000L),remixStyle)
     val story=chooseStory(candidates,duration)
     val other=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }.ifEmpty { candidates }
-    val energy=chooseShots(other,duration,shortLength*1000L,1)
-    val curiosity=chooseShots(other,duration,shortLength*1000L,0)
-    val storyShort=chooseShots(story,duration,shortLength*1000L,0)
+    val energy=chooseCompleteShort(candidates,duration,emptyList())
+    val curiosity=chooseCompleteShort(candidates,duration,energy)
+    val storyShort=chooseCompleteShort(candidates,duration,energy+curiosity)
     val jobs=if(batch) listOf("Monster_Long" to long,"Short_Energy" to energy,
      "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
      else listOf("Monster_Long" to long)
@@ -252,6 +252,16 @@ class RenderService:Service() {
    if(remaining<1000L)break
   }
   return selected
+ }
+ private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>):List<Shot> {
+  val windows=candidates.sortedByDescending { it.score }.mapNotNull { s->
+   val start=(s.start-3000L).coerceAtLeast(0L)
+   val end=(s.end+3000L).coerceAtMost(duration)
+   if(end-start<12000L || end-start>60000L)null else Shot(start,end,s.score)
+  }.distinctBy { it.start/3000L }
+  return listOfNotNull(windows.firstOrNull { s->
+   excluded.none { x->s.start<x.end && s.end>x.start }
+  })
  }
  private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
   val lengths=listOf(15000L,20000L,30000L,45000L,60000L).filter { it<=duration }
