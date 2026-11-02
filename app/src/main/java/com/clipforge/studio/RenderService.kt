@@ -286,6 +286,30 @@ class RenderService:Service() {
   exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
+  if(name=="Monster_Long") {
+   val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
+   val output=File(dir,"${name}_${System.currentTimeMillis()}.mp4")
+   thread {
+    try {
+     notifyStatus("Rendering long with native stream copy — no encoder")
+     NativeRemuxer.export(this,uri,output,shots.map { NativeRemuxer.Range(it.start,it.end) })
+     val savedOk=saveToGallery(output)
+     output.delete()
+     if(!savedOk)error("Gallery save failed")
+     handler.post { render(uri,jobs,index+1,0,saved+1) }
+    }catch(e:Exception) {
+     android.util.Log.e("ClipForge","Native remux failed",e)
+     output.delete()
+     handler.post {
+      if(attempt==0) {
+       notifyStatus("Native remux unavailable; retrying with compatible export")
+       finish("Native remux failed: ${e.message}. Original source preserved.")
+      } else finish("Long export failed: ${e.message}")
+     }
+    }
+   }
+   return
+  }
   val items=shots.map { s->
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
