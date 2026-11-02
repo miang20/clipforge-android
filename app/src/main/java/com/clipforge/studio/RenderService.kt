@@ -57,7 +57,7 @@ class RenderService:Service() {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=enrichWithAudio(visual,duration,uri)
-    val long=chooseShots(candidates,duration,minutes*60000L,remixStyle)
+    val long=chooseLongExportShots(duration,minutes*60000L,remixStyle)
     val story=chooseStory(candidates,duration)
     val other=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }.ifEmpty { candidates }
     val energy=chooseShots(other,duration,shortLength*1000L,1)
@@ -223,6 +223,35 @@ class RenderService:Service() {
    3->chosen.sortedByDescending { it.start }
    else->chosen.shuffled()
   }
+ }
+ private fun chooseLongExportShots(duration:Long,target:Long,style:Int):List<Shot> {
+  // Media3 may reinitialize codecs at each clip boundary. For long-form
+  // exports, use fewer, longer, source-contiguous passages instead of
+  // dozens of 10-12 second fragments.
+  val blockMs=60_000L
+  val blocks=mutableListOf<Shot>()
+  var start=0L
+  while(start<duration) {
+   val end=min(duration,start+blockMs)
+   if(end-start>=1000L)blocks.add(Shot(start,end))
+   start=end
+  }
+  val ordered=when(style) {
+   2->blocks
+   3->blocks.reversed()
+   else->blocks.shuffled()
+  }
+  var remaining=min(target,duration)
+  val selected=mutableListOf<Shot>()
+  for(s in ordered) {
+   val take=min(remaining,s.end-s.start)
+   if(take>=1000L) {
+    selected.add(Shot(s.start,s.start+take))
+    remaining-=take
+   }
+   if(remaining<1000L)break
+  }
+  return selected
  }
  private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
   val lengths=listOf(15000L,20000L,30000L,45000L,60000L).filter { it<=duration }
