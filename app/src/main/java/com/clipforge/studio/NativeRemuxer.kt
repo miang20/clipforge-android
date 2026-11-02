@@ -32,6 +32,7 @@ internal object NativeRemuxer {
     require(tracks.any { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/")==true })
     muxer=MediaMuxer(output.absolutePath,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     val mapping=tracks.associateWith { muxer!!.addTrack(probe.getTrackFormat(it)) }
+    val videoTrack=tracks.first { probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("video/")==true }
     muxer!!.start()
     var timelineUs=0L
     val buffer=ByteBuffer.allocateDirect(4*1024*1024)
@@ -39,6 +40,13 @@ internal object NativeRemuxer {
      require(range.endMs>range.startMs)
      val startUs=range.startMs*1000L
      val endUs=range.endMs*1000L
+     val syncProbe=MediaExtractor()
+     val commonStartUs=try {
+      syncProbe.setDataSource(afd.fileDescriptor,afd.startOffset,afd.length)
+      syncProbe.selectTrack(videoTrack)
+      syncProbe.seekTo(startUs,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+      syncProbe.sampleTime.coerceAtLeast(0L)
+     }finally { syncProbe.release() }
      var passageEnd=timelineUs
      for(track in tracks) {
       val extractor=MediaExtractor()
@@ -46,12 +54,12 @@ internal object NativeRemuxer {
        extractor.setDataSource(afd.fileDescriptor,afd.startOffset,afd.length)
        extractor.selectTrack(track)
        extractor.seekTo(startUs,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-       val firstUs=extractor.sampleTime.coerceAtLeast(0L)
        val info=android.media.MediaCodec.BufferInfo()
        var previousPts=-1L
        while(true) {
         val pts=extractor.sampleTime
         if(pts<0 || pts>=endUs)break
+        if(pts<commonStartUs) { if(!extractor.advance())break; continue }
         if(extractor.sampleTrackIndex!=track) {
          if(!extractor.advance())break
          continue
@@ -60,7 +68,7 @@ internal object NativeRemuxer {
         val size=extractor.readSampleData(buffer,0)
         if(size<0)break
         require(size<=buffer.capacity()) { "Sample exceeds remux buffer" }
-        val shifted=timelineUs+max(0L,pts-firstUs)
+        val shifted=timelineUs+max(0L,pts-commonStartUs)
         if(shifted>previousPts) {
          info.set(0,size,shifted,extractor.sampleFlags)
          muxer!!.writeSampleData(mapping.getValue(track),buffer,info)
