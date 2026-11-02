@@ -305,6 +305,7 @@ class RenderService:Service() {
    val progress=ProgressHolder()
    var lastPercent=-1
    var lastMovement=android.os.SystemClock.elapsedRealtime()
+   var lastNotice=0L
    val watchdog=object:Runnable {
     override fun run() {
      if(transformer!==active || !running.get())return
@@ -316,13 +317,14 @@ class RenderService:Service() {
       lastMovement=now
       notifyStatus("Rendering ${index+1}/${jobs.size}: $name — ${progress.progress}%")
      }
-     if(now-lastMovement>180_000L) {
-      android.util.Log.e("ClipForge","Export stalled: $name at $lastPercent%")
-      exportWatchdog=null
-      try {active?.cancel()}catch(e:Exception){android.util.Log.e("ClipForge","Cancel failed",e)}
-      output.delete()
-      finish("Export stalled for 3 minutes: $name. Please try another source format.")
-      return
+     // Media3 progress is an estimate and may remain unchanged for long periods
+     // while encoding complex source segments. A flat percentage is NOT proof
+     // that the muxer or codec has stopped. Never cancel a healthy export solely
+     // because progress has not advanced for three minutes.
+     if(now-lastMovement>=180_000L && now-lastNotice>=60_000L) {
+      lastNotice=now
+      android.util.Log.w("ClipForge","Slow export $name: progressState=$state percent=$lastPercent elapsedWithoutPercentChangeMs=${now-lastMovement}")
+      notifyStatus("Still rendering ${index+1}/${jobs.size}: $name — slow segment (progress ${if(lastPercent>=0) "$lastPercent%" else "unavailable"})")
      }
      handler.postDelayed(this,5000L)
     }
