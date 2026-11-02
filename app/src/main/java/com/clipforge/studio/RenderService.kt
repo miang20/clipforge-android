@@ -225,31 +225,34 @@ class RenderService:Service() {
   }
  }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int):List<Shot> {
-  // Media3 may reinitialize codecs at each clip boundary. For long-form
-  // exports, use fewer, longer, source-contiguous passages instead of
-  // dozens of 10-12 second fragments.
-  val blockMs=60_000L
+  // Use several complete, contiguous passages rather than the entire original
+  // in source order. Keep each passage long enough to preserve the event.
+  val blockMs=30_000L
   val blocks=mutableListOf<Shot>()
   var start=0L
   while(start<duration) {
    val end=min(duration,start+blockMs)
-   if(end-start>=1000L)blocks.add(Shot(start,end))
+   if(end-start>=8000L)blocks.add(Shot(start,end))
    start=end
   }
   val ordered=when(style) {
-   2->blocks
+   2->blocks.shuffled()
    3->blocks.reversed()
    else->blocks.shuffled()
   }
   var remaining=min(target,duration)
   val selected=mutableListOf<Shot>()
   for(s in ordered) {
+   if(remaining<8000L)break
    val take=min(remaining,s.end-s.start)
-   if(take>=1000L) {
+   if(take>=8000L) {
     selected.add(Shot(s.start,s.start+take))
     remaining-=take
    }
-   if(remaining<1000L)break
+  }
+  // Prevent accidentally exporting the original footage in its original order.
+  if(selected.size>1 && selected.zipWithNext().all { (x,y)->x.start<y.start }) {
+   selected.reverse()
   }
   return selected
  }
