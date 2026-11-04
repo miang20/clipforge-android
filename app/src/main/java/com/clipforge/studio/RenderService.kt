@@ -210,7 +210,7 @@ class RenderService:Service() {
      previous?.let {
       val delta=diff(it,sig)
       activity.add(t to delta)
-      if(delta>24.0 && t-marks.last()>=800L)marks.add(t)
+      if(delta>24.0 && t-marks.last()>=250L)marks.add(t)
      }
      previous=sig
      frame.recycle()
@@ -221,7 +221,7 @@ class RenderService:Service() {
    }
    marks.add(duration)
    val clips=marks.zipWithNext { a,b->Shot(a,b) }
-    .filter { it.end-it.start>=1000L }.map { s->
+    .filter { it.end>it.start }.map { s->
     val values=activity.filter { it.first>=s.start && it.first<s.end }.map { it.second }
     s.copy(score=(if(values.isEmpty())0.0 else values.average())+min(s.end-s.start,12000L)/3000.0)
    }
@@ -325,10 +325,10 @@ class RenderService:Service() {
   val chosen=mutableListOf<Shot>()
   var remaining=min(target,duration)
   for(scene in ordered) {
-   if(remaining<1000L)break
+   if(remaining<=0L)break
    // A scene is never extended or combined just to fill a time block.
    val length=min(scene.end-scene.start,remaining)
-   if(length>=1000L) {
+   if(length>0L) {
     chosen.add(scene.copy(end=scene.start+length))
     remaining-=length
    }
