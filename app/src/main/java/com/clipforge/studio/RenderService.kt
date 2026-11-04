@@ -33,6 +33,7 @@ class RenderService:Service() {
  private val running=AtomicBoolean(false)
  private var activeSource:Uri?=null
  private var activeJobs:List<Pair<String,List<Shot>>> = emptyList()
+ private val prefs by lazy { getSharedPreferences("clipforge_jobs",MODE_PRIVATE) }
  override fun onBind(intent:Intent?)=null
  override fun onCreate() {
   super.onCreate()
@@ -64,7 +65,7 @@ class RenderService:Service() {
   thread {
    try {
     val (duration,visual)=quickScan(uri)
-    val candidates=enrichWithAudio(visual,duration,uri)
+    val candidates=deduplicate(enrichWithAudio(visual,duration,uri),uri)
     val long=chooseLongExportShots(duration,min(duration,minutes*60_000L),remixStyle,candidates)
     // Preserve continuous story windows for the Shorts selector.
     // Short selections are ranked independently of the long timeline.
@@ -75,6 +76,7 @@ class RenderService:Service() {
      "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
      else listOf("Monster_Long" to long)
     activeJobs=jobs
+    prefs.edit().putString("source",uri.toString()).putInt("job_count",jobs.size).putInt("completed",0).putString("state","rendering").apply()
     writeProductionPlan(jobs,uri)
     handler.post { render(uri,jobs,0,0,0) }
    }catch(e:Exception){finish("Analysis failed: ${e.message}")}
@@ -173,6 +175,25 @@ class RenderService:Service() {
    require(clips.isNotEmpty()) { "No usable scenes found" }
    return duration to clips
   }finally { retriever.release() }
+ }
+ // Reject near-identical static scenes using tiny luminance signatures.
+ private fun deduplicate(shots:List<Shot>,uri:Uri):List<Shot> {
+  val retriever=MediaMetadataRetriever()
+  return try {
+   retriever.setDataSource(this,uri)
+   val seen=mutableListOf<IntArray>()
+   val result=mutableListOf<Shot>()
+   for(shot in shots) {
+    val middle=(shot.start+shot.end)/2
+    val frame=try { retriever.getFrameAtTime(middle*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC) }catch(_:Exception){null}
+    if(frame==null) {result.add(shot);continue}
+    val sig=try { signature(frame) }finally {frame.recycle()}
+    val duplicate=seen.any { diff(it,sig)<3.0 }
+    if(!duplicate || result.size<3) {seen.add(sig);result.add(shot)}
+   }
+   if(result.size*2<shots.size)shots else result
+  }catch(e:Exception){android.util.Log.w("ClipForge","Dedup skipped",e);shots}
+  finally {retriever.release()}
  }
  private fun chooseShots(candidates:List<Shot>,duration:Long,target:Long,style:Int):List<Shot> {
   // Select non-overlapping segments across the entire source; never duplicate footage.
@@ -334,7 +355,7 @@ class RenderService:Service() {
         check.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L
        }finally {check.release()}
       }catch(_:Exception){0L}
-      if(actual<=0L || abs(actual-expected)>max(2000L,expected/20L)) {
+      if(actual<=0L || abs(actual-expected)>max(2000L,expected/20L) || output.length()<8192L) {
        android.util.Log.e("ClipForge","Duration mismatch $name expected=$expected actual=$actual attempt=$attempt")
        output.delete()
        handler.post {
@@ -346,6 +367,7 @@ class RenderService:Service() {
        output.delete()
        handler.post {
         if(success) {
+         prefs.edit().putInt("completed",index+1).apply()
          if(index==0)thread { try { exportThumbnails(uri,selected) } catch(e:Exception) { android.util.Log.w("ClipForge","Thumbnail export unavailable",e) } }
          render(uri,jobs,index+1,0,saved+1)
         }
@@ -484,6 +506,7 @@ class RenderService:Service() {
   }catch(e:Exception){contentResolver.delete(uri,null,null);false}
  }
  private fun finish(message:String) {
+  prefs.edit().putString("state",message).apply()
   handler.post {
    exportWatchdog?.let { handler.removeCallbacks(it) }
    exportWatchdog=null
