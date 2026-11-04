@@ -3,6 +3,11 @@ package com.clipforge.studio
 import android.app.*
 import android.content.*
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.content.ContentValues
 import android.media.MediaMetadataRetriever
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -26,6 +31,8 @@ class RenderService:Service() {
  private val channel="clipforge_render"
  private val notificationId=91
  private val running=AtomicBoolean(false)
+ private var activeSource:Uri?=null
+ private var activeJobs:List<Pair<String,List<Shot>>> = emptyList()
  override fun onBind(intent:Intent?)=null
  override fun onCreate() {
   super.onCreate()
@@ -53,6 +60,7 @@ class RenderService:Service() {
   val shortLength=intent.getLongExtra("shortSeconds",0L).let { if(it==0L)30L else it.coerceIn(15,60) }
   val remixStyle=intent.getIntExtra("remixStyle",0).coerceIn(0,3)
   val batch=intent.getBooleanExtra("batch",true)
+  activeSource=uri
   thread {
    try {
     val (duration,visual)=quickScan(uri)
@@ -66,6 +74,8 @@ class RenderService:Service() {
     val jobs=if(batch) listOf("Monster_Long" to long,"Short_Energy" to energy,
      "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
      else listOf("Monster_Long" to long)
+    activeJobs=jobs
+    writeProductionPlan(jobs,uri)
     handler.post { render(uri,jobs,0,0,0) }
    }catch(e:Exception){finish("Analysis failed: ${e.message}")}
   }
@@ -335,7 +345,10 @@ class RenderService:Service() {
        val success=try {saveToGallery(output)}catch(e:Exception){false}
        output.delete()
        handler.post {
-        if(success)render(uri,jobs,index+1,0,saved+1)
+        if(success) {
+         if(index==0)thread { try { exportThumbnails(uri,selected) } catch(e:Exception) { android.util.Log.w("ClipForge","Thumbnail export unavailable",e) } }
+         render(uri,jobs,index+1,0,saved+1)
+        }
         else finish("Gallery save failed: $name; saved $saved/4")
        }
       }
@@ -386,6 +399,74 @@ class RenderService:Service() {
    if(attempt<1)render(uri,jobs,index,attempt+1,saved)
    else finish("Export failed: ${e.message}, saved $saved/4")
   }
+ }
+
+ // Offline creator pack: export five source-derived, high-contrast 16:9 thumbnails.
+ // Upscaling to 4K does not add detail beyond the source footage.
+ private fun exportThumbnails(uri:Uri,selected:List<Shot>) {
+  val candidates=selected.sortedByDescending { it.score }.take(5)
+  if(candidates.isEmpty())return
+  val retriever=MediaMetadataRetriever()
+  try {
+   retriever.setDataSource(this,uri)
+   candidates.forEachIndexed { index,shot ->
+    val at=shot.start+(shot.end-shot.start)/2
+    val frame=retriever.getFrameAtTime(at*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?:return@forEachIndexed
+    try {
+     val wide=Bitmap.createBitmap(3840,2160,Bitmap.Config.ARGB_8888)
+     try {
+      val canvas=Canvas(wide)
+      canvas.drawColor(Color.BLACK)
+      val scale=max(3840f/frame.width,2160f/frame.height)
+      val w=frame.width*scale;val h=frame.height*scale
+      val dest=android.graphics.RectF((3840-w)/2,(2160-h)/2,(3840+w)/2,(2160+h)/2)
+      val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+      canvas.drawBitmap(frame,null,dest,paint)
+      val name="ClipForge_Thumbnail_${index+1}_${System.currentTimeMillis()}"
+      saveBitmap(wide,"$name.jpg",Bitmap.CompressFormat.JPEG,90)
+      if(index==0)saveBitmap(wide,"$name.png",Bitmap.CompressFormat.PNG,100)
+     }finally {wide.recycle()}
+    }finally {frame.recycle()}
+   }
+  }finally {retriever.release()}
+ }
+ private fun saveBitmap(bitmap:Bitmap,name:String,format:Bitmap.CompressFormat,quality:Int) {
+  if(Build.VERSION.SDK_INT<29)return
+  val values=ContentValues().apply {
+   put(MediaStore.Images.Media.DISPLAY_NAME,name)
+   put(MediaStore.Images.Media.MIME_TYPE,if(format==Bitmap.CompressFormat.PNG)"image/png" else "image/jpeg")
+   put(MediaStore.Images.Media.RELATIVE_PATH,Environment.DIRECTORY_PICTURES+"/ClipForge")
+   put(MediaStore.Images.Media.IS_PENDING,1)
+  }
+  val uri=contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI,values)?:return
+  try {
+   contentResolver.openOutputStream(uri)?.use { out ->
+    check(bitmap.compress(format,quality,out)) { "Bitmap compression failed" }
+   } ?: error("Cannot write thumbnail")
+   contentResolver.update(uri,ContentValues().apply {put(MediaStore.Images.Media.IS_PENDING,0)},null,null)
+  }catch(e:Exception){contentResolver.delete(uri,null,null);throw e}
+ }
+ // Human-readable, offline edit decision list, rights checklist and SEO starting points.
+ private fun writeProductionPlan(jobs:List<Pair<String,List<Shot>>>,uri:Uri) {
+  val dir=getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)?:filesDir
+  dir.mkdirs()
+  val file=File(dir,"ClipForge_Plan_${System.currentTimeMillis()}.txt")
+  val content=buildString {
+   appendLine("CLIPFORGE OFFLINE PRODUCTION REPORT")
+   appendLine("Source: $uri")
+   appendLine("Source audio remains attached to Media3 clipped video segments.")
+   appendLine("Rights checklist: confirm permission/license for every source clip, music and sound.")
+   appendLine("Remixing, zooming or shuffling does not guarantee copyright clearance or YPP eligibility.")
+   appendLine("Suggested title: Unexpected Moments That Escalated Fast | Compilation")
+   appendLine("Suggested keywords: unexpected moments, funny fails, caught on camera, compilation")
+   appendLine("Suggested description: A curated compilation of surprising moments. #Compilation #UnexpectedMoments #FunnyFails")
+   jobs.forEach { (name,shots) ->
+    appendLine()
+    appendLine("$name - ${shots.size} segments, ${shots.sumOf { it.end-it.start }/1000}s")
+    shots.forEach { shot -> appendLine("${shot.start}..${shot.end} ms | score=${"%.2f".format(java.util.Locale.US,shot.score)}") }
+   }
+  }
+  file.writeText(content)
  }
  private fun saveToGallery(file:File):Boolean {
   if(Build.VERSION.SDK_INT<29)return false
