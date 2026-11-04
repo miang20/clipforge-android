@@ -86,9 +86,9 @@ class RenderService:Service() {
     val long=chooseLongExportShots(duration,min(duration,minutes*60_000L),remixStyle,candidates)
     // Preserve continuous story windows for the Shorts selector.
     // Short selections are ranked independently of the long timeline.
-    val energy=chooseCompleteShort(candidates,duration,emptyList(),shortLength*1000L)
-    val curiosity=chooseCompleteShort(candidates,duration,energy,shortLength*1000L)
-    val storyShort=chooseCompleteShort(candidates,duration,energy+curiosity,shortLength*1000L)
+    val energy=chooseCompleteShort(candidates,duration,emptyList(),shortLength*1000L,0)
+    val curiosity=chooseCompleteShort(candidates,duration,energy,shortLength*1000L,1)
+    val storyShort=chooseCompleteShort(candidates,duration,energy+curiosity,shortLength*1000L,2)
     val jobs=if(batch) listOf("Monster_Long" to long,"Short_Energy" to energy,
      "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
      else listOf("Monster_Long" to long)
@@ -173,7 +173,7 @@ class RenderService:Service() {
      previous?.let {
       val delta=diff(it,sig)
       activity.add(t to delta)
-      if(delta>29.0 && t-marks.last()>=2000L)marks.add(t)
+      if(delta>24.0 && t-marks.last()>=1500L)marks.add(t)
      }
      previous=sig
      frame.recycle()
@@ -184,7 +184,7 @@ class RenderService:Service() {
    }
    marks.add(duration)
    val clips=marks.zipWithNext { a,b->Shot(a,b) }.flatMap { s->
-    val n=ceil((s.end-s.start)/12000.0).toInt().coerceAtLeast(1)
+    val n=ceil((s.end-s.start)/8000.0).toInt().coerceAtLeast(1)
     (0 until n).map { i->Shot(s.start+(s.end-s.start)*i/n,s.start+(s.end-s.start)*(i+1)/n) }
    }.filter { it.end-it.start>=1000L }.map { s->
     val values=activity.filter { it.first>=s.start && it.first<s.end }.map { it.second }
@@ -308,20 +308,33 @@ class RenderService:Service() {
   }
   return selected
  }
- private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>,preferredMs:Long):List<Shot> {
-  // Select a continuous setup-to-payoff window, honoring the requested Shorts length.
+ private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>,preferredMs:Long,mode:Int):List<Shot> {
+  // Three different rankings: high impact, unusual visual change, and coherent story.
   val length=preferredMs.coerceIn(15_000L,60_000L).coerceAtMost(duration)
-  val windows=candidates.sortedByDescending { it.score }.map { shot ->
-   val start=(shot.start-(length/3)).coerceIn(0L,(duration-length).coerceAtLeast(0L))
-   Shot(start,start+length,shot.score)
-  }.distinctBy { it.start/2000L }
-  val chosen=windows.firstOrNull { window ->
-   excluded.none { other -> window.start<other.end && window.end>other.start }
-  } ?: windows.maxByOrNull { window ->
-   // Prefer separation even when three disjoint windows cannot fit in a short source.
-   excluded.minOfOrNull { other -> max(0L,max(other.start-window.end,window.start-other.end)) } ?: Long.MAX_VALUE
+  if(length<=0L)return emptyList()
+  val starts=(candidates.map { (it.start-length/3).coerceIn(0L,(duration-length).coerceAtLeast(0L)) }+
+   listOf(0L,(duration-length).coerceAtLeast(0L))).distinctBy { it/1000L }
+  val windows=starts.map { start ->
+   val end=start+length
+   val overlapping=candidates.filter { it.start<end && it.end>start }
+   val average=overlapping.map { it.score }.average().let { if(it.isNaN())0.0 else it }
+   val peak=overlapping.maxOfOrNull { it.score }?:0.0
+   val sceneCount=overlapping.size.toDouble()
+   val score=when(mode) {
+    0->peak*2+average
+    1->average+sceneCount*1.5
+    else->average+min(sceneCount,5.0)*0.5
+   }
+   Shot(start,end,score)
   }
-  return listOfNotNull(chosen)
+  val ranked=windows.sortedWith(compareByDescending<Shot> { w ->
+   excluded.sumOf { other -> max(0L,min(w.end,other.end)-max(w.start,other.start)) }.let { overlap ->
+    if(overlap==0L)1 else 0
+   }
+  }.thenByDescending { it.score-
+   excluded.sumOf { other -> max(0L,min(it.end,other.end)-max(it.start,other.start)) }.toDouble()/1000.0*100.0
+  })
+  return ranked.firstOrNull()?.let { listOf(it) }?:emptyList()
  }
  private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
   val lengths=listOf(15000L,20000L,30000L,45000L,60000L).filter { it<=duration }
