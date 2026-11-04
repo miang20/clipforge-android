@@ -311,39 +311,31 @@ class RenderService:Service() {
   }
  }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>):List<Shot> {
-  // Media3 may reinitialize codecs at each clip boundary. For long-form
-  // exports, use fewer, longer, source-contiguous passages instead of
-  // dozens of 10-12 second fragments.
-  val blockMs=60_000L // Fewer codec discontinuities on long exports
-  val blocks=mutableListOf<Shot>()
-  var start=0L
-  while(start<duration) {
-   val end=min(duration,start+blockMs)
-   if(end-start>=1000L) {
-   val overlaps=candidates.filter { it.start<end && it.end>start }
-   blocks.add(Shot(start,end,if(overlaps.isEmpty())0.0 else overlaps.map { it.score }.average()))
-  }
-   start=end
-  }
+  // Real detected scenes, never arbitrary 30/60 second shuffle blocks.
+  // Use the original source timestamps, preserving source audio with each scene.
+  val valid=candidates.filter { it.end>it.start && it.start>=0L && it.end<=duration }
+  if(valid.isEmpty())return emptyList()
   val ordered=when(style) {
-   2->blocks
-   3->blocks.reversed()
-   else->blocks.sortedByDescending { it.score }.let { ranked ->
-    // Lead with a strong moment, then vary the rest without repeating source ranges.
-    if(ranked.isEmpty())ranked else listOf(ranked.first())+ranked.drop(1).shuffled()
+   2->valid.sortedBy { it.start }
+   3->valid.sortedByDescending { it.start }
+   else->{
+    val ranked=valid.sortedByDescending { it.score }
+    val hook=ranked.first()
+    listOf(hook)+ranked.drop(1).shuffled()
    }
   }
+  val chosen=mutableListOf<Shot>()
   var remaining=min(target,duration)
-  val selected=mutableListOf<Shot>()
-  for(s in ordered) {
-   val take=min(remaining,s.end-s.start)
-   if(take>=1000L) {
-    selected.add(Shot(s.start,s.start+take))
-    remaining-=take
-   }
+  for(scene in ordered) {
    if(remaining<1000L)break
+   // A scene is never extended or combined just to fill a time block.
+   val length=min(scene.end-scene.start,remaining)
+   if(length>=1000L) {
+    chosen.add(scene.copy(end=scene.start+length))
+    remaining-=length
+   }
   }
-  return selected
+  return chosen
  }
  private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>,preferredMs:Long,mode:Int):List<Shot> {
   // Three different rankings: high impact, unusual visual change, and coherent story.
