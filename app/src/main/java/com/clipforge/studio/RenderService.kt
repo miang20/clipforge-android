@@ -314,7 +314,7 @@ class RenderService:Service() {
   // Media3 may reinitialize codecs at each clip boundary. For long-form
   // exports, use fewer, longer, source-contiguous passages instead of
   // dozens of 10-12 second fragments.
-  val blockMs=30_000L
+  val blockMs=60_000L // Fewer codec discontinuities on long exports
   val blocks=mutableListOf<Shot>()
   var start=0L
   while(start<duration) {
@@ -489,7 +489,19 @@ class RenderService:Service() {
   if(index>=jobs.size) {finish("Complete: $saved/${jobs.size} videos saved in Movies/ClipForge");return}
   val (name,selected)=jobs[index]
   if(selected.isEmpty()) {finish("No clips for $name");return}
-  val shots=selected
+  // On a stalled or failed first attempt, reduce the number of codec
+  // transitions by restoring source-contiguous windows. The original
+  // shuffled edit remains the first attempt and is not silently overwritten.
+  val shots=if(attempt>0 && name=="Monster_Long") {
+   val sorted=selected.sortedBy { it.start }
+   val merged=mutableListOf<Shot>()
+   for(s in sorted) {
+    val prev=merged.lastOrNull()
+    if(prev!=null && prev.end==s.start)merged[merged.lastIndex]=prev.copy(end=s.end)
+    else merged.add(s)
+   }
+   merged
+  } else selected
   exportWatchdog?.let { handler.removeCallbacks(it) }
   exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
@@ -563,6 +575,7 @@ class RenderService:Service() {
    var lastPercent=-1
    var lastMovement=android.os.SystemClock.elapsedRealtime()
    var lastNotice=0L
+   var recoveryStarted=false
    val watchdog=object:Runnable {
     override fun run() {
      if(transformer!==active || !running.get())return
@@ -584,6 +597,22 @@ class RenderService:Service() {
       lastNotice=now
       android.util.Log.w("ClipForge","Slow export $name: progressState=$state percent=$lastPercent elapsedWithoutPercentChangeMs=${now-lastMovement}")
       notifyStatus("Still rendering ${index+1}/${jobs.size}: $name — slow segment (progress ${if(lastPercent>=0) "$lastPercent%" else "unavailable"})")
+     }
+     // An unchanged progress percentage alone is not conclusive.
+     // After 8 minutes without movement, recover once using fewer
+     // source-contiguous segments rather than waiting indefinitely.
+     if(!recoveryStarted && attempt==0 && now-lastMovement>=480_000L) {
+      recoveryStarted=true
+      android.util.Log.e("ClipForge","Watchdog recovery $name: state=$state progress=$lastPercent")
+      notifyStatus("Recovering stalled export: $name")
+      transformer=null
+      try { active?.cancel() } catch(e:Exception) {
+       android.util.Log.w("ClipForge","Cancel failed",e)
+      }
+      output.delete()
+      exportWatchdog=null
+      handler.postDelayed({if(running.get())render(uri,jobs,index,1,saved)},1500L)
+      return
      }
      handler.postDelayed(this,5000L)
     }
