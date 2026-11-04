@@ -494,16 +494,18 @@ class RenderService:Service() {
   exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
-  val faceCrop=if(name.startsWith("Short_"))faceAwareCrop(uri,shots) else null
+  val faceCrop:Crop?=null // Avoid blocking the Transformer main thread on frame analysis.
   val items=shots.map { s->
-   val crop=if(name.startsWith("Short_"))faceCrop?:motionAwareCrop(uri,s) else null
+   val crop=faceCrop // Motion analysis is disabled until it can run off the main thread.
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
    val builder=EditedMediaItem.Builder(media)
    if(name.startsWith("Short_")) {
     builder.setEffects(Effects(listOf(ClipForgeAudioLeveler()), if(crop!=null)listOf(crop,Presentation.createForAspectRatio(9f/16f, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)) else listOf(Presentation.createForAspectRatio(9f/16f, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP))))
    } else {
-    builder.setEffects(Effects(listOf(ClipForgeAudioLeveler()), listOf(ScaleAndRotateTransformation.Builder().setScale(1.05f,1.05f).build())))
+    // Long compilations prioritize stream-copy/transmux where Media3 supports it.
+    // Per-segment video/audio effects force full re-encoding and caused long stalls.
+    // Shorts retain reframing; long 105% zoom and leveling are deferred for reliability.
    }
    builder.build()
   }
@@ -529,7 +531,7 @@ class RenderService:Service() {
        android.util.Log.e("ClipForge","Duration mismatch $name expected=$expected actual=$actual attempt=$attempt")
        output.delete()
        handler.post {
-        if(attempt<1)render(uri,jobs,index,attempt+1,saved)
+        if(attempt<1)handler.postDelayed({render(uri,jobs,index,attempt+1,saved)},1200L)
         else finish("Duration mismatch: $name expected ${expected/1000}s got ${actual/1000}s; saved $saved/4")
        }
       }else{
@@ -551,7 +553,7 @@ class RenderService:Service() {
      exportWatchdog=null
      android.util.Log.e("ClipForge","Export $name attempt $attempt code ${e.errorCode}",e)
      output.delete()
-     if(attempt<1)render(uri,jobs,index,attempt+1,saved)
+     if(attempt<1)handler.postDelayed({render(uri,jobs,index,attempt+1,saved)},1200L)
      else finish("Export failed: $name (${e.getErrorCodeName()} / ${e.errorCode}), saved $saved/${jobs.size}")
     }
    }).build()
@@ -590,7 +592,7 @@ class RenderService:Service() {
    handler.postDelayed(watchdog,5000L)
   }catch(e:Exception){
    output.delete()
-   if(attempt<1)render(uri,jobs,index,attempt+1,saved)
+   if(attempt<1)handler.postDelayed({render(uri,jobs,index,attempt+1,saved)},1200L)
    else finish("Export failed: ${e.message}, saved $saved/4")
   }
  }
