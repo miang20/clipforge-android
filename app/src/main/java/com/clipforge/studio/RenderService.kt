@@ -53,7 +53,20 @@ class RenderService:Service() {
   (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(notificationId,notification(s))
  }
  override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
-  if(intent==null)return START_NOT_STICKY
+  if(intent==null) {
+   val savedSource=prefs.getString("source",null)?:return START_NOT_STICKY
+   val state=prefs.getString("state","")?: ""
+   if(state!="rendering")return START_NOT_STICKY
+   val resume=Intent(this,RenderService::class.java).apply {
+    putExtra("source",savedSource)
+    putExtra("minutes",prefs.getLong("minutes",10L))
+    putExtra("shortSeconds",prefs.getLong("shortSeconds",30L))
+    putExtra("remixStyle",prefs.getInt("remixStyle",0))
+    putExtra("batch",prefs.getBoolean("batch",true))
+    putExtra("resume",true)
+   }
+   return onStartCommand(resume,flags,startId)
+  }
   if(!running.compareAndSet(false,true))return START_STICKY
   startForeground(notificationId,notification("Preparing 4 videos..."))
   val uri=Uri.parse(intent.getStringExtra("source")?:return START_NOT_STICKY)
@@ -62,6 +75,8 @@ class RenderService:Service() {
   val remixStyle=intent.getIntExtra("remixStyle",0).coerceIn(0,3)
   val batch=intent.getBooleanExtra("batch",true)
   activeSource=uri
+  val resuming=intent.getBooleanExtra("resume",false)
+  prefs.edit().putLong("minutes",minutes).putLong("shortSeconds",shortLength).putInt("remixStyle",remixStyle).putBoolean("batch",batch).apply()
   thread {
    try {
     val (duration,visual)=quickScan(uri)
@@ -76,9 +91,10 @@ class RenderService:Service() {
      "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
      else listOf("Monster_Long" to long)
     activeJobs=jobs
-    prefs.edit().putString("source",uri.toString()).putInt("job_count",jobs.size).putInt("completed",0).putString("state","rendering").apply()
+    val completed=if(resuming)prefs.getInt("completed",0).coerceIn(0,jobs.size) else 0
+    prefs.edit().putString("source",uri.toString()).putInt("job_count",jobs.size).putInt("completed",completed).putString("state","rendering").apply()
     writeProductionPlan(jobs,uri)
-    handler.post { render(uri,jobs,0,0,0) }
+    handler.post { render(uri,jobs,completed,0,completed) }
    }catch(e:Exception){finish("Analysis failed: ${e.message}")}
   }
   return START_STICKY
@@ -355,7 +371,7 @@ class RenderService:Service() {
         check.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:0L
        }finally {check.release()}
       }catch(_:Exception){0L}
-      if(actual<=0L || abs(actual-expected)>max(2000L,expected/20L) || output.length()<8192L) {
+      if(actual<=0L || abs(actual-expected)>max(2000L,expected/20L) || output.length()<8192L || !hasVideoTrack(output)) {
        android.util.Log.e("ClipForge","Duration mismatch $name expected=$expected actual=$actual attempt=$attempt")
        output.delete()
        handler.post {
@@ -489,6 +505,16 @@ class RenderService:Service() {
    }
   }
   file.writeText(content)
+ }
+ // Verify an actual video track exists; metadata duration alone is insufficient.
+ private fun hasVideoTrack(file:File):Boolean {
+  val extractor=MediaExtractor()
+  return try {
+   extractor.setDataSource(file.absolutePath)
+   (0 until extractor.trackCount).any { i ->
+    extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/")==true
+   }
+  }catch(_:Exception){false}finally {extractor.release()}
  }
  private fun saveToGallery(file:File):Boolean {
   if(Build.VERSION.SDK_INT<29)return false
