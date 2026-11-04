@@ -69,9 +69,10 @@ class RenderService:Service() {
    }
    return onStartCommand(resume,flags,startId)
   }
-  if(!running.compareAndSet(false,true))return START_STICKY
   startForeground(notificationId,notification("Preparing 4 videos..."))
-  val uri=Uri.parse(intent.getStringExtra("source")?:return START_NOT_STICKY)
+  val source=intent.getStringExtra("source")?:run {stopSelf();return START_NOT_STICKY}
+  if(!running.compareAndSet(false,true))return START_STICKY
+  val uri=Uri.parse(source)
   val minutes=intent.getLongExtra("minutes",10L).coerceIn(1,180)
   val shortLength=intent.getLongExtra("shortSeconds",0L).let { if(it==0L)30L else it.coerceIn(15,60) }
   val remixStyle=intent.getIntExtra("remixStyle",0).coerceIn(0,3)
@@ -159,8 +160,8 @@ class RenderService:Service() {
   try {
    val duration=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
    require(duration>=15000L) { "Video must be at least 15 seconds" }
-   // One bounded scan for the entire batch. At most 100 frame requests.
-   val step=max(1000L,ceil(duration/100.0).toLong())
+   // One bounded scan for the entire batch, sampled across the complete timeline.
+   val step=max(1000L,ceil(duration/160.0).toLong())
    val marks=mutableListOf(0L)
    val activity=mutableListOf<Pair<Long,Double>>()
    var previous:IntArray?=null
@@ -327,13 +328,9 @@ class RenderService:Service() {
    }
    Shot(start,end,score)
   }
-  val ranked=windows.sortedWith(compareByDescending<Shot> { w ->
-   excluded.sumOf { other -> max(0L,min(w.end,other.end)-max(w.start,other.start)) }.let { overlap ->
-    if(overlap==0L)1 else 0
-   }
-  }.thenByDescending { it.score-
-   excluded.sumOf { other -> max(0L,min(it.end,other.end)-max(it.start,other.start)) }.toDouble()/1000.0*100.0
-  })
+  val ranked=windows.sortedWith(compareBy<Shot> { w ->
+   excluded.sumOf { other -> max(0L,min(w.end,other.end)-max(w.start,other.start)) }
+  }.thenByDescending { it.score })
   return ranked.firstOrNull()?.let { listOf(it) }?:emptyList()
  }
  private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
