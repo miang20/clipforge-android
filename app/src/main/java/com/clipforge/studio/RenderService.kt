@@ -485,6 +485,42 @@ class RenderService:Service() {
   exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
+  // Long exports first use packet-level remuxing: no encoder or decoder.
+  // Run off the main thread and retain Media3 as an explicit compatibility fallback.
+  if(name=="Monster_Long" && attempt==0) {
+   val dir=getExternalFilesDir(Environment.DIRECTORY_MOVIES)?:filesDir
+   val nativeOutput=File(dir,"Native_${System.currentTimeMillis()}.mp4")
+   notifyStatus("Rendering Long with Native Stream Copy — No Encoder")
+   thread {
+    try {
+     NativeStreamCopy.export(this,uri,shots.map {
+      NativeStreamCopy.Range(it.start,it.end)
+     },nativeOutput) { percent ->
+      lastProgress=percent
+      prefs.edit().putInt("progress",percent).putInt("active_job",index).apply()
+      if(percent%10==0)notifyStatus("Native Stream Copy: $percent%")
+     }
+     require(nativeOutput.length()>8192L && hasVideoTrack(nativeOutput)) {
+      "Native output validation failed"
+     }
+     val savedNative=saveToGallery(nativeOutput)
+     require(savedNative){"Native gallery save failed"}
+     nativeOutput.delete()
+     handler.post {
+      prefs.edit().putInt("completed",index+1).apply()
+      render(uri,jobs,index+1,0,saved+1)
+     }
+    }catch(e:Exception) {
+     android.util.Log.e("ClipForge","Native stream copy failed; compatibility fallback",e)
+     nativeOutput.delete()
+     handler.post {
+      notifyStatus("Native copy unsupported: ${e.message}. Trying compatibility export")
+      render(uri,jobs,index,1,saved)
+     }
+    }
+   }
+   return
+  }
   val faceCrop:Crop?=null // Avoid blocking the Transformer main thread on frame analysis.
   val items=shots.map { s->
    val crop=faceCrop // Motion analysis is disabled until it can run off the main thread.
