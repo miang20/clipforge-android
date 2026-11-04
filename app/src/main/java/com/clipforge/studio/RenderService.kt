@@ -197,7 +197,7 @@ class RenderService:Service() {
    val duration=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?:error("Duration unavailable")
    require(duration>=15000L) { "Video must be at least 15 seconds" }
    // One bounded scan for the entire batch, sampled across the complete timeline.
-   val step=max(1000L,ceil(duration/160.0).toLong())
+   val step=max(350L,ceil(duration/600.0).toLong())
    val marks=mutableListOf(0L)
    val activity=mutableListOf<Pair<Long,Double>>()
    var previous:IntArray?=null
@@ -210,7 +210,7 @@ class RenderService:Service() {
      previous?.let {
       val delta=diff(it,sig)
       activity.add(t to delta)
-      if(delta>24.0 && t-marks.last()>=1500L)marks.add(t)
+      if(delta>24.0 && t-marks.last()>=800L)marks.add(t)
      }
      previous=sig
      frame.recycle()
@@ -220,10 +220,8 @@ class RenderService:Service() {
     t+=step
    }
    marks.add(duration)
-   val clips=marks.zipWithNext { a,b->Shot(a,b) }.flatMap { s->
-    val n=ceil((s.end-s.start)/8000.0).toInt().coerceAtLeast(1)
-    (0 until n).map { i->Shot(s.start+(s.end-s.start)*i/n,s.start+(s.end-s.start)*(i+1)/n) }
-   }.filter { it.end-it.start>=1000L }.map { s->
+   val clips=marks.zipWithNext { a,b->Shot(a,b) }
+    .filter { it.end-it.start>=1000L }.map { s->
     val values=activity.filter { it.first>=s.start && it.first<s.end }.map { it.second }
     s.copy(score=(if(values.isEmpty())0.0 else values.average())+min(s.end-s.start,12000L)/3000.0)
    }
