@@ -51,6 +51,18 @@ jobs:
             echo "BUILD SUCCESSFUL"
           fi
           exit "$result"
+      - name: Verify APK contents and installable metadata
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          unzip -t "$APK" | tail -1
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee apk-badging.txt
+          grep -q "package: name='com.clipforge.studio'" apk-badging.txt
+          unzip -l "$APK" | grep -q 'classes.dex'
+          echo "APK package, DEX, ZIP integrity and badging verified"
       - name: Publish failure details to repository issue
         if: failure()
         env:
