@@ -57,12 +57,12 @@ class RenderService:Service() {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=enrichWithAudio(visual,duration,uri)
-    val long=chooseLongExportShots(duration,(duration*0.70).toLong().coerceAtMost(15*60000L),remixStyle)
-    val story=chooseStory(candidates,duration)
-    val other=candidates.filter { s->story.none { x->s.start<x.end && s.end>x.start } }.ifEmpty { candidates }
-    val energy=chooseCompleteShort(candidates,duration,emptyList())
-    val curiosity=chooseCompleteShort(candidates,duration,energy)
-    val storyShort=chooseCompleteShort(candidates,duration,energy+curiosity)
+    val long=chooseLongExportShots(duration,min(duration,minutes*60_000L),remixStyle,candidates)
+    // Preserve continuous story windows for the Shorts selector.
+    // Short selections are ranked independently of the long timeline.
+    val energy=chooseCompleteShort(candidates,duration,emptyList(),shortLength*1000L)
+    val curiosity=chooseCompleteShort(candidates,duration,energy,shortLength*1000L)
+    val storyShort=chooseCompleteShort(candidates,duration,energy+curiosity,shortLength*1000L)
     val jobs=if(batch) listOf("Monster_Long" to long,"Short_Energy" to energy,
      "Short_Curiosity" to curiosity,"Short_Story" to storyShort)
      else listOf("Monster_Long" to long)
@@ -224,22 +224,28 @@ class RenderService:Service() {
    else->chosen.shuffled()
   }
  }
- private fun chooseLongExportShots(duration:Long,target:Long,style:Int):List<Shot> {
+ private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>):List<Shot> {
   // Media3 may reinitialize codecs at each clip boundary. For long-form
   // exports, use fewer, longer, source-contiguous passages instead of
   // dozens of 10-12 second fragments.
-  val blockMs=60_000L
+  val blockMs=30_000L
   val blocks=mutableListOf<Shot>()
   var start=0L
   while(start<duration) {
    val end=min(duration,start+blockMs)
-   if(end-start>=1000L)blocks.add(Shot(start,end))
+   if(end-start>=1000L) {
+   val overlaps=candidates.filter { it.start<end && it.end>start }
+   blocks.add(Shot(start,end,if(overlaps.isEmpty())0.0 else overlaps.map { it.score }.average()))
+  }
    start=end
   }
   val ordered=when(style) {
    2->blocks
    3->blocks.reversed()
-   else->blocks.shuffled()
+   else->blocks.sortedByDescending { it.score }.let { ranked ->
+    // Lead with a strong moment, then vary the rest without repeating source ranges.
+    if(ranked.isEmpty())ranked else listOf(ranked.first())+ranked.drop(1).shuffled()
+   }
   }
   var remaining=min(target,duration)
   val selected=mutableListOf<Shot>()
@@ -253,15 +259,20 @@ class RenderService:Service() {
   }
   return selected
  }
- private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>):List<Shot> {
-  val windows=candidates.sortedByDescending { it.score }.mapNotNull { s->
-   val start=(s.start-3000L).coerceAtLeast(0L)
-   val end=(s.end+3000L).coerceAtMost(duration)
-   if(end-start<12000L || end-start>60000L)null else Shot(start,end,s.score)
-  }.distinctBy { it.start/3000L }
-  return listOfNotNull(windows.firstOrNull { s->
-   excluded.none { x->s.start<x.end && s.end>x.start }
-  })
+ private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>,preferredMs:Long):List<Shot> {
+  // Select a continuous setup-to-payoff window, honoring the requested Shorts length.
+  val length=preferredMs.coerceIn(15_000L,60_000L).coerceAtMost(duration)
+  val windows=candidates.sortedByDescending { it.score }.map { shot ->
+   val start=(shot.start-(length/3)).coerceIn(0L,(duration-length).coerceAtLeast(0L))
+   Shot(start,start+length,shot.score)
+  }.distinctBy { it.start/2000L }
+  val chosen=windows.firstOrNull { window ->
+   excluded.none { other -> window.start<other.end && window.end>other.start }
+  } ?: windows.maxByOrNull { window ->
+   // Prefer separation even when three disjoint windows cannot fit in a short source.
+   excluded.minOfOrNull { other -> max(0L,max(other.start-window.end,window.start-other.end)) } ?: Long.MAX_VALUE
+  }
+  return listOfNotNull(chosen)
  }
  private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
   val lengths=listOf(15000L,20000L,30000L,45000L,60000L).filter { it<=duration }
