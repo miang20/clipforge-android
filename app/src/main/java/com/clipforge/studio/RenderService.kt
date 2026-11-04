@@ -433,6 +433,58 @@ class RenderService:Service() {
   }catch(e:Exception){android.util.Log.w("ClipForge","Face-aware framing unavailable",e);return null}
   finally {retriever.release()}
  }
+ // Track visual motion in each shot, including cars and animals, without cloud services.
+ // This is motion-saliency tracking rather than semantic object recognition.
+ private fun motionAwareCrop(uri:Uri,shot:Shot):Crop? {
+  val retriever=MediaMetadataRetriever()
+  try {
+   retriever.setDataSource(this,uri)
+   val w=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()?:return null
+   val h=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()?:return null
+   val rotation=retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()?:0
+   if(rotation%180!=0 || w<=0 || h<=0)return null
+   val fraction=(h*9.0/(w*16.0)).coerceAtMost(1.0)
+   if(fraction>=0.98)return null
+   val centers=mutableListOf<Double>()
+   var previous:IntArray?=null
+   val columns=48
+   val rows=27
+   for(i in 0 until 6) {
+    val at=shot.start+(shot.end-shot.start)*(i+1)/7
+    val frame=try{retriever.getFrameAtTime(at*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)}catch(_:Exception){null}?:continue
+    try {
+     val small=Bitmap.createScaledBitmap(frame,columns,rows,false)
+     val pixels=IntArray(columns*rows)
+     small.getPixels(pixels,0,columns,0,0,columns,rows)
+     if(small!==frame)small.recycle()
+     val prev=previous
+     if(prev!=null) {
+      val energy=DoubleArray(columns)
+      for(y in 2 until rows-2)for(x in 1 until columns-1) {
+       val idx=y*columns+x
+       val now=pixels[idx];val old=prev[idx]
+       val diff=(kotlin.math.abs(Color.red(now)-Color.red(old))+
+         kotlin.math.abs(Color.green(now)-Color.green(old))+
+         kotlin.math.abs(Color.blue(now)-Color.blue(old))).toDouble()
+       // De-emphasize hard frame cuts and moving background near the edges.
+       if(diff>32 && diff<500)energy[x]+=diff
+      }
+      val total=energy.sum()
+      if(total>15000.0) {
+       val weighted=energy.indices.sumOf { energy[it]*(it+0.5) }
+       centers.add(weighted/(total*columns))
+      }
+     }
+     previous=pixels
+    }finally{frame.recycle()}
+   }
+   if(centers.isEmpty())return null
+   val center=centers.sorted()[centers.size/2]
+   val left=(center-fraction/2).coerceIn(0.0,1.0-fraction)
+   return Crop((2*left-1).toFloat(),(2*(left+fraction)-1).toFloat(),-1f,1f)
+  }catch(e:Exception){android.util.Log.w("ClipForge","Motion crop fallback",e);return null}
+  finally{retriever.release()}
+ }
  private fun render(uri:Uri,jobs:List<Pair<String,List<Shot>>>,index:Int,attempt:Int,saved:Int) {
   if(index>=jobs.size) {finish("Complete: $saved/${jobs.size} videos saved in Movies/ClipForge");return}
   val (name,selected)=jobs[index]
@@ -442,8 +494,9 @@ class RenderService:Service() {
   exportWatchdog=null
   notifyStatus("Rendering ${index+1}/${jobs.size}: $name (attempt ${attempt+1})")
   if(shots.any { it.end<=it.start }) {finish("Invalid clip range: $name");return}
-  val crop=if(name.startsWith("Short_"))faceAwareCrop(uri,shots) else null
+  val faceCrop=if(name.startsWith("Short_"))faceAwareCrop(uri,shots) else null
   val items=shots.map { s->
+   val crop=if(name.startsWith("Short_"))faceCrop?:motionAwareCrop(uri,s) else null
    val media=MediaItem.Builder().setUri(uri).setClippingConfiguration(
     MediaItem.ClippingConfiguration.Builder().setStartPositionMs(s.start).setEndPositionMs(s.end).build()).build()
    val builder=EditedMediaItem.Builder(media)
