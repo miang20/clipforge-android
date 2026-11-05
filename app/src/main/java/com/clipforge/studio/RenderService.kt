@@ -509,7 +509,7 @@ class RenderService:Service() {
      // Generate thumbnail pack on the existing background worker, and report failures.
      try {
       notifyStatus("Generating 4K thumbnail pack — Pictures/ClipForge")
-      exportThumbnails(uri,selected)
+      exportThumbnails(uri,selected,name)
       prefs.edit().putString("thumbnail_status","Thumbnail pack exported to Pictures/ClipForge").apply()
      }catch(e:Exception) {
       android.util.Log.e("ClipForge","Thumbnail export failed",e)
@@ -577,7 +577,7 @@ class RenderService:Service() {
        handler.post {
         if(success) {
          prefs.edit().putInt("completed",index+1).apply()
-         if(index==0)thread { try { exportThumbnails(uri,selected) } catch(e:Exception) {
+         thread { try { exportThumbnails(uri,selected,name) } catch(e:Exception) {
           android.util.Log.e("ClipForge","Thumbnail export failed",e)
           prefs.edit().putString("thumbnail_status","Thumbnail failed: ${e.message}").apply()
          } }
@@ -661,41 +661,32 @@ class RenderService:Service() {
 
  // Offline creator pack: export five source-derived, high-contrast 16:9 thumbnails.
  // Upscaling to 4K does not add detail beyond the source footage.
- private fun exportThumbnails(uri:Uri,selected:List<Shot>) {
-  val candidates=selected.sortedByDescending { it.score }.take(5)
-  require(candidates.isNotEmpty()) { "No thumbnail candidates" }
+ private fun exportThumbnails(uri:Uri,selected:List<Shot>,jobName:String) {
+  require(selected.isNotEmpty()) { "No thumbnail candidates" }
+  val best=selected.maxByOrNull { it.score }!!
   val retriever=MediaMetadataRetriever()
-  var savedCount=0
   try {
    retriever.setDataSource(this,uri)
-   candidates.forEachIndexed { index,shot ->
-    val at=(shot.start+(shot.end-shot.start)/2)*1000L
-    val frame=if(Build.VERSION.SDK_INT>=27)
-     retriever.getScaledFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,1280,720)
-    else retriever.getFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-    if(frame==null) {
-     android.util.Log.w("ClipForge","No thumbnail frame for candidate ${index+1}")
-     return@forEachIndexed
+   val at=(best.start+(best.end-best.start)/2)*1000L
+   val frame=if(Build.VERSION.SDK_INT>=27)
+    retriever.getScaledFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,1280,720)
+   else retriever.getFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+   require(frame!=null) { "Cannot decode thumbnail frame for $jobName" }
+   try {
+    val style=when(jobName) {
+     "Monster_Long"->1
+     "Short_Energy"->1
+     "Short_Curiosity"->0
+     else->2
     }
+    val edited=makeThumbnailVariant(frame,style)
     try {
-     // Three distinct, automatically graded YouTube thumbnail variants per scene.
-     for(style in 0..2) {
-      val edited=makeThumbnailVariant(frame,style)
-      try {
-       val name="ClipForge_Thumb_${index+1}_Style_${style+1}_${System.currentTimeMillis()}.jpg"
-       saveBitmap(edited,name,Bitmap.CompressFormat.JPEG,93)
-       savedCount++
-      }finally {edited.recycle()}
-     }
-    }catch(e:OutOfMemoryError) {
-     android.util.Log.e("ClipForge","Thumbnail memory exhausted",e)
-     break
-    }finally {frame.recycle()}
-   }
-  }finally {retriever.release()}
-  require(savedCount>0) { "No frames decoded for thumbnails" }
-  prefs.edit().putString("thumbnail_status","$savedCount edited thumbnails saved to Pictures/ClipForge").apply()
-  notifyStatus("$savedCount edited thumbnails saved to Pictures/ClipForge")
+     saveBitmap(edited,"ClipForge_${jobName}_Thumbnail.jpg",Bitmap.CompressFormat.JPEG,94)
+     prefs.edit().putString("thumbnail_status","Saved $jobName thumbnail to Pictures/ClipForge").apply()
+     notifyStatus("Saved $jobName thumbnail to Pictures/ClipForge")
+    }finally { edited.recycle() }
+   }finally { frame.recycle() }
+  }finally { retriever.release() }
  }
  private fun makeThumbnailVariant(source:Bitmap,style:Int):Bitmap {
   val width=1280
