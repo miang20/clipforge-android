@@ -97,7 +97,7 @@ class MainActivity : Activity() {
   }}
   card.addView(select)
   card.addView(txt("02   LONG VIDEO DURATION (MINUTES)",13f,accent,true))
-  minutes=EditText(this).apply { inputType=InputType.TYPE_CLASS_NUMBER;setText("10");setTextColor(Color.WHITE);setHintTextColor(Color.GRAY);hint="10–15 recommended";backgroundTintList=android.content.res.ColorStateList.valueOf(accent) }
+  minutes=EditText(this).apply { inputType=InputType.TYPE_CLASS_NUMBER;setText("10");setTextColor(Color.WHITE);setHintTextColor(Color.GRAY);hint="7–10 minutes";backgroundTintList=android.content.res.ColorStateList.valueOf(accent) }
   card.addView(minutes)
   val advanced=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;visibility=View.GONE }
   advanced.addView(txt("03   OUTPUT FORMAT",13f,accent,true))
@@ -397,7 +397,7 @@ class MainActivity : Activity() {
  }
  private fun startExport() {
   val uri=source?:return
-  val mins=minutes.text.toString().toLongOrNull()?.coerceIn(1,180)?:10L
+  val mins=minutes.text.toString().toLongOrNull()?.coerceIn(7,10)?:10L
   val intent=Intent(this,RenderService::class.java).apply {
    putExtra("source",uri.toString())
    putExtra("minutes",mins)
