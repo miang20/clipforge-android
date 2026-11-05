@@ -506,13 +506,18 @@ class RenderService:Service() {
      val savedNative=saveToGallery(nativeOutput)
      require(savedNative){"Native gallery save failed"}
      nativeOutput.delete()
+     // Generate thumbnail pack on the existing background worker, and report failures.
+     try {
+      notifyStatus("Generating 4K thumbnail pack — Pictures/ClipForge")
+      exportThumbnails(uri,selected)
+      prefs.edit().putString("thumbnail_status","Thumbnail pack exported to Pictures/ClipForge").apply()
+     }catch(e:Exception) {
+      android.util.Log.e("ClipForge","Thumbnail export failed",e)
+      prefs.edit().putString("thumbnail_status","Thumbnail export failed: ${e.message}").apply()
+      notifyStatus("Thumbnail export failed: ${e.message}")
+     }
      handler.post {
       prefs.edit().putInt("completed",index+1).apply()
-      // Native long export must trigger the same thumbnail pack as Media3.
-      thread {
-       try { exportThumbnails(uri,selected) }
-       catch(e:Exception) { android.util.Log.w("ClipForge","Native thumbnail export unavailable",e) }
-      }
       render(uri,jobs,index+1,0,saved+1)
      }
     }catch(e:Exception) {
