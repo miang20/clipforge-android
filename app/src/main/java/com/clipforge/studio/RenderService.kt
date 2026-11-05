@@ -109,7 +109,7 @@ class RenderService:Service() {
   val source=intent.getStringExtra("source")?:run {stopSelf();return START_NOT_STICKY}
   if(!running.compareAndSet(false,true))return START_STICKY
   val uri=Uri.parse(source)
-  val minutes=intent.getLongExtra("minutes",10L).coerceIn(1,180)
+  val minutes=intent.getLongExtra("minutes",10L).coerceIn(7,10)
   val shortLength=intent.getLongExtra("shortSeconds",0L).let { if(it==0L)30L else it.coerceIn(15,60) }
   val remixStyle=intent.getIntExtra("remixStyle",0).coerceIn(0,3)
   val batch=intent.getBooleanExtra("batch",true)
