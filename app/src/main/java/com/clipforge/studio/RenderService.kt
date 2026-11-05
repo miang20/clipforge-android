@@ -670,7 +670,6 @@ class RenderService:Service() {
    retriever.setDataSource(this,uri)
    candidates.forEachIndexed { index,shot ->
     val at=(shot.start+(shot.end-shot.start)/2)*1000L
-    // Decode at bounded size to avoid 4K bitmap OOM on Android phones.
     val frame=if(Build.VERSION.SDK_INT>=27)
      retriever.getScaledFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,1280,720)
     else retriever.getFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
@@ -679,15 +678,59 @@ class RenderService:Service() {
      return@forEachIndexed
     }
     try {
-     val name="ClipForge_Thumbnail_${index+1}_${System.currentTimeMillis()}.jpg"
-     saveBitmap(frame,name,Bitmap.CompressFormat.JPEG,92)
-     savedCount++
+     // Three distinct, automatically graded YouTube thumbnail variants per scene.
+     for(style in 0..2) {
+      val edited=makeThumbnailVariant(frame,style)
+      try {
+       val name="ClipForge_Thumb_${index+1}_Style_${style+1}_${System.currentTimeMillis()}.jpg"
+       saveBitmap(edited,name,Bitmap.CompressFormat.JPEG,93)
+       savedCount++
+      }finally {edited.recycle()}
+     }
+    }catch(e:OutOfMemoryError) {
+     android.util.Log.e("ClipForge","Thumbnail memory exhausted",e)
+     break
     }finally {frame.recycle()}
    }
   }finally {retriever.release()}
   require(savedCount>0) { "No frames decoded for thumbnails" }
-  prefs.edit().putString("thumbnail_status","$savedCount thumbnails saved to Pictures/ClipForge").apply()
-  notifyStatus("$savedCount thumbnails saved to Pictures/ClipForge")
+  prefs.edit().putString("thumbnail_status","$savedCount edited thumbnails saved to Pictures/ClipForge").apply()
+  notifyStatus("$savedCount edited thumbnails saved to Pictures/ClipForge")
+ }
+ private fun makeThumbnailVariant(source:Bitmap,style:Int):Bitmap {
+  val width=1280
+  val height=720
+  val output=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888)
+  val canvas=Canvas(output)
+  val srcWidth=source.width.toFloat()
+  val srcHeight=source.height.toFloat()
+  val crop=when(style) { 0->1.04f;1->1.13f;else->1.08f }
+  val scale=max(width/srcWidth,height/srcHeight)*crop
+  val drawW=srcWidth*scale
+  val drawH=srcHeight*scale
+  val left=(width-drawW)/2f
+  val top=(height-drawH)/2f
+  val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+  val contrast=when(style) {0->1.14f;1->1.23f;else->1.10f}
+  val brightness=when(style) {0->4f;1->-5f;else->9f}
+  val saturation=when(style) {0->1.13f;1->1.27f;else->1.07f}
+  val lumR=0.213f;val lumG=0.715f;val lumB=0.072f
+  val inv=1f-saturation
+  val colorMatrix=android.graphics.ColorMatrix(floatArrayOf(
+   (inv*lumR+saturation)*contrast,inv*lumG*contrast,inv*lumB*contrast,0f,brightness+128f*(1f-contrast),
+   inv*lumR*contrast,(inv*lumG+saturation)*contrast,inv*lumB*contrast,0f,brightness+128f*(1f-contrast),
+   inv*lumR*contrast,inv*lumG*contrast,(inv*lumB+saturation)*contrast,0f,brightness+128f*(1f-contrast),
+   0f,0f,0f,1f,0f
+  ))
+  paint.colorFilter=android.graphics.ColorMatrixColorFilter(colorMatrix)
+  canvas.drawBitmap(source,null,android.graphics.RectF(left,top,left+drawW,top+drawH),paint)
+  // A subtle dark edge gradient increases central subject prominence.
+  val edge=Paint(Paint.ANTI_ALIAS_FLAG)
+  edge.shader=android.graphics.RadialGradient(width/2f,height/2f,850f,
+   intArrayOf(Color.TRANSPARENT,Color.TRANSPARENT,Color.argb(if(style==1)110 else 75,0,0,0)),
+   floatArrayOf(0f,0.55f,1f),android.graphics.Shader.TileMode.CLAMP)
+  canvas.drawRect(0f,0f,width.toFloat(),height.toFloat(),edge)
+  return output
  }
  private fun saveBitmap(bitmap:Bitmap,name:String,format:Bitmap.CompressFormat,quality:Int) {
   if(Build.VERSION.SDK_INT<29)return
