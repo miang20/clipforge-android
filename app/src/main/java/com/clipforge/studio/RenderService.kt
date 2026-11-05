@@ -577,7 +577,10 @@ class RenderService:Service() {
        handler.post {
         if(success) {
          prefs.edit().putInt("completed",index+1).apply()
-         if(index==0)thread { try { exportThumbnails(uri,selected) } catch(e:Exception) { android.util.Log.w("ClipForge","Thumbnail export unavailable",e) } }
+         if(index==0)thread { try { exportThumbnails(uri,selected) } catch(e:Exception) {
+          android.util.Log.e("ClipForge","Thumbnail export failed",e)
+          prefs.edit().putString("thumbnail_status","Thumbnail failed: ${e.message}").apply()
+         } }
          render(uri,jobs,index+1,0,saved+1)
         }
         else finish("Gallery save failed: $name; saved $saved/4")
@@ -660,30 +663,31 @@ class RenderService:Service() {
  // Upscaling to 4K does not add detail beyond the source footage.
  private fun exportThumbnails(uri:Uri,selected:List<Shot>) {
   val candidates=selected.sortedByDescending { it.score }.take(5)
-  if(candidates.isEmpty())return
+  require(candidates.isNotEmpty()) { "No thumbnail candidates" }
   val retriever=MediaMetadataRetriever()
+  var savedCount=0
   try {
    retriever.setDataSource(this,uri)
    candidates.forEachIndexed { index,shot ->
-    val at=shot.start+(shot.end-shot.start)/2
-    val frame=retriever.getFrameAtTime(at*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?:return@forEachIndexed
+    val at=(shot.start+(shot.end-shot.start)/2)*1000L
+    // Decode at bounded size to avoid 4K bitmap OOM on Android phones.
+    val frame=if(Build.VERSION.SDK_INT>=27)
+     retriever.getScaledFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,1280,720)
+    else retriever.getFrameAtTime(at,MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    if(frame==null) {
+     android.util.Log.w("ClipForge","No thumbnail frame for candidate ${index+1}")
+     return@forEachIndexed
+    }
     try {
-     val wide=Bitmap.createBitmap(3840,2160,Bitmap.Config.ARGB_8888)
-     try {
-      val canvas=Canvas(wide)
-      canvas.drawColor(Color.BLACK)
-      val scale=max(3840f/frame.width,2160f/frame.height)
-      val w=frame.width*scale;val h=frame.height*scale
-      val dest=android.graphics.RectF((3840-w)/2,(2160-h)/2,(3840+w)/2,(2160+h)/2)
-      val paint=Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-      canvas.drawBitmap(frame,null,dest,paint)
-      val name="ClipForge_Thumbnail_${index+1}_${System.currentTimeMillis()}"
-      saveBitmap(wide,"$name.jpg",Bitmap.CompressFormat.JPEG,90)
-      if(index==0)saveBitmap(wide,"$name.png",Bitmap.CompressFormat.PNG,100)
-     }finally {wide.recycle()}
+     val name="ClipForge_Thumbnail_${index+1}_${System.currentTimeMillis()}.jpg"
+     saveBitmap(frame,name,Bitmap.CompressFormat.JPEG,92)
+     savedCount++
     }finally {frame.recycle()}
    }
   }finally {retriever.release()}
+  require(savedCount>0) { "No frames decoded for thumbnails" }
+  prefs.edit().putString("thumbnail_status","$savedCount thumbnails saved to Pictures/ClipForge").apply()
+  notifyStatus("$savedCount thumbnails saved to Pictures/ClipForge")
  }
  private fun saveBitmap(bitmap:Bitmap,name:String,format:Bitmap.CompressFormat,quality:Int) {
   if(Build.VERSION.SDK_INT<29)return
