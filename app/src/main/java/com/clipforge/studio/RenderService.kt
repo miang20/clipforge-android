@@ -508,6 +508,11 @@ class RenderService:Service() {
      nativeOutput.delete()
      handler.post {
       prefs.edit().putInt("completed",index+1).apply()
+      // Native long export must trigger the same thumbnail pack as Media3.
+      thread {
+       try { exportThumbnails(uri,selected) }
+       catch(e:Exception) { android.util.Log.w("ClipForge","Native thumbnail export unavailable",e) }
+      }
       render(uri,jobs,index+1,0,saved+1)
      }
     }catch(e:Exception) {
