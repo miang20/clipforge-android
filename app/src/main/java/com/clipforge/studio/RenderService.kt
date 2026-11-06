@@ -241,20 +241,30 @@ class RenderService:Service() {
  }
  // Reject near-identical static scenes using tiny luminance signatures.
  private fun deduplicate(shots:List<Shot>,uri:Uri):List<Shot> {
+  // Compare multiple positions in a complete event. A single similar midpoint
+  // (e.g. the same room or laughing face) does not make two events duplicates.
   val retriever=MediaMetadataRetriever()
   return try {
    retriever.setDataSource(this,uri)
-   val seen=mutableListOf<IntArray>()
+   val seen=mutableListOf<List<IntArray>>()
    val result=mutableListOf<Shot>()
    for(shot in shots) {
-    val middle=(shot.start+shot.end)/2
-    val frame=try { retriever.getFrameAtTime(middle*1000L,MediaMetadataRetriever.OPTION_CLOSEST_SYNC) }catch(_:Exception){null}
-    if(frame==null) {result.add(shot);continue}
-    val sig=try { signature(frame) }finally {frame.recycle()}
-    val duplicate=seen.any { diff(it,sig)<3.0 }
-    if(!duplicate || result.size<3) {seen.add(sig);result.add(shot)}
+    val duration=shot.end-shot.start
+    val signatures=mutableListOf<IntArray>()
+    for(fraction in listOf(0.2,0.5,0.8)) {
+     val at=shot.start+(duration*fraction).toLong()
+     val frame=try {retriever.getFrameAtTime(at*1000L,MediaMetadataRetriever.OPTION_CLOSEST)}catch(_:Exception){null}
+     if(frame!=null)try {signatures.add(signature(frame))}finally {frame.recycle()}
+    }
+    val duplicate=signatures.size==3 && seen.any { prior ->
+     prior.size==3 && signatures.indices.all { i->diff(signatures[i],prior[i])<2.0 }
+    }
+    if(!duplicate) {
+     result.add(shot)
+     if(signatures.size==3)seen.add(signatures)
+    }
    }
-   if(result.size*2<shots.size)shots else result
+   if(result.isEmpty())shots else result
   }catch(e:Exception){android.util.Log.w("ClipForge","Dedup skipped",e);shots}
   finally {retriever.release()}
  }
@@ -369,60 +379,83 @@ class RenderService:Service() {
   return events.filter { it.start>=0L && it.end<=duration && it.end-it.start>=2_000L }
  }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>):List<Shot> {
-  // Real detected scenes, never arbitrary 30/60 second shuffle blocks.
-  // Use the original source timestamps, preserving source audio with each scene.
   val valid=candidates.filter { it.end>it.start && it.start>=0L && it.end<=duration }
   if(valid.isEmpty())return emptyList()
+  val budget=min(target,duration)
+  val ranked=valid.sortedByDescending { it.score }
   val ordered=when(style) {
    2->valid.sortedBy { it.start }
    3->valid.sortedByDescending { it.start }
-   else->{
-    // Prefer the highest-scoring distinct scenes; shuffle within small
-    // quality bands rather than randomly filling with weak moments.
-    val ranked=valid.sortedByDescending { it.score }
-    val hook=ranked.first()
-    val remaining=ranked.drop(1).chunked(5).flatMap { it.shuffled() }
-    listOf(hook)+remaining
+   else-> {
+    // Hook from the strongest COMPLETE event that fits the output budget.
+    val hook=ranked.firstOrNull {it.end-it.start<=budget}
+    if(hook==null)emptyList() else {
+     val rest=ranked.filter {it!==hook}
+     // Interleave quality tiers and source regions so consecutive clips are
+     // neither monotonous nor just adjacent fragments from one source stretch.
+     val top=rest.take(max(1,rest.size/3)).shuffled()
+     val middle=rest.drop(top.size).take(max(1,rest.size/3)).shuffled()
+     val lower=rest.drop(top.size+middle.size).shuffled()
+     val mixed=mutableListOf<Shot>()
+     val tiers=listOf(top,middle,lower)
+     var i=0
+     while(tiers.any {i<it.size}) {
+      for(tier in tiers)if(i<tier.size)mixed.add(tier[i])
+      i++
+     }
+     listOf(hook)+mixed
+    }
    }
   }
   val chosen=mutableListOf<Shot>()
-  var remaining=min(target,duration)
+  var remaining=budget
   for(scene in ordered) {
    val length=scene.end-scene.start
-   // Never split an event just to hit the duration target: the remainder would
-   // otherwise reappear elsewhere as a confusing half-scene.
    if(length<2_000L || length>remaining)continue
+   // Never put neighboring original events directly beside each other in
+   // remix mode; this reduces accidental continuation of one source sequence.
+   if(style!=2 && style!=3 && chosen.isNotEmpty() &&
+      kotlin.math.abs(scene.start-chosen.last().end)<3_000L)continue
    chosen.add(scene)
    remaining-=length
    if(remaining<2_000L)break
   }
-  // If the best event exceeds the budget, leave the output shorter rather than
-  // exporting a half-action. The native muxer may add keyframe pre-roll.
+  // Fill the tail with whole events only; no partial action or arbitrary filler.
+  if(remaining>=2_000L && style!=2 && style!=3) {
+   for(scene in ranked) {
+    val length=scene.end-scene.start
+    if(length in 2_000L..remaining && chosen.none {it.start==scene.start && it.end==scene.end}) {
+     chosen.add(scene)
+     remaining-=length
+    }
+    if(remaining<2_000L)break
+   }
+  }
   return chosen
  }
  private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>,preferredMs:Long,mode:Int):List<Shot> {
-  // Three different rankings: high impact, unusual visual change, and coherent story.
-  val length=preferredMs.coerceIn(15_000L,60_000L).coerceAtMost(duration)
-  if(length<=0L)return emptyList()
-  val starts=(candidates.map { (it.start-length/3).coerceIn(0L,(duration-length).coerceAtLeast(0L)) }+
-   listOf(0L,(duration-length).coerceAtLeast(0L))).distinctBy { it/1000L }
-  val windows=starts.map { start ->
-   val end=start+length
-   val overlapping=candidates.filter { it.start<end && it.end>start }
-   val average=overlapping.map { it.score }.average().let { if(it.isNaN())0.0 else it }
-   val peak=overlapping.maxOfOrNull { it.score }?:0.0
-   val sceneCount=overlapping.size.toDouble()
+  val preferred=preferredMs.coerceIn(15_000L,60_000L).coerceAtMost(duration)
+  if(preferred<=0L)return emptyList()
+  // Prefer complete source events; avoid arbitrary 30-second windows that
+  // start after the setup or end before the reaction.
+  val eligible=candidates.filter {it.end>it.start && it.end-it.start in 8_000L..60_000L}
+  val scored=eligible.map { event->
+   val length=event.end-event.start
+   val overlap=excluded.sumOf {other->max(0L,min(event.end,other.end)-max(event.start,other.start))}
    val score=when(mode) {
-    0->peak*2+average
-    1->average+sceneCount*1.5
-    else->average+min(sceneCount,5.0)*0.5
+    0->event.score*1.5
+    1->event.score+min(length,preferred)/8000.0
+    else->event.score+min(length,preferred)/4000.0
    }
-   Shot(start,end,score)
+   Triple(event,overlap,score-kotlin.math.abs(length-preferred)/12000.0)
   }
-  val ranked=windows.sortedWith(compareBy<Shot> { w ->
-   excluded.sumOf { other -> max(0L,min(w.end,other.end)-max(w.start,other.start)) }
-  }.thenByDescending { it.score })
-  return ranked.firstOrNull()?.let { listOf(it) }?:emptyList()
+  val best=scored.sortedWith(compareBy<Triple<Shot,Long,Double>> {it.second}
+   .thenByDescending {it.third}).firstOrNull()?.first
+  if(best!=null)return listOf(best)
+  // Very long continuous footage may have no short-sized event; fallback to
+  // a source-contiguous window instead of returning an empty short.
+  val start=(candidates.maxByOrNull {it.score}?.start?:0L).coerceIn(0L,(duration-preferred).coerceAtLeast(0L))
+  return listOf(Shot(start,start+preferred))
  }
  private fun chooseStory(candidates:List<Shot>,duration:Long):List<Shot> {
   val lengths=listOf(15000L,20000L,30000L,45000L,60000L).filter { it<=duration }
