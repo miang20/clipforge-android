@@ -45,6 +45,7 @@ internal object NativeStreamCopy {
    val buffer=ByteBuffer.allocateDirect(4*1024*1024)
    val info=MediaCodec.BufferInfo()
    var outputOffsetUs=0L
+   val lastTrackPts=longArrayOf(-1L,-1L)
    // Absolute output ceiling: prevent keyframe pre-roll from extending a 5–7m long.
    val maxOutputUs=420_000_000L
    ranges.forEachIndexed { index,range ->
@@ -58,6 +59,7 @@ internal object NativeStreamCopy {
      val startUs=v.sampleTime
      require(startUs>=0L){"Unable to seek video"}
      val endUs=minOf(range.endMs*1000,startUs+(maxOutputUs-outputOffsetUs))
+     if(endUs<=startUs)return@forEachIndexed
      if(a!=null && audio!=null) {
       a.setDataSource(context,uri,null);a.selectTrack(audio)
       a.seekTo(startUs,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
@@ -67,6 +69,8 @@ internal object NativeStreamCopy {
      }
      var lastVideoUs=startUs
      var lastAudioUs=startUs
+     var wroteVideo=false
+     var wroteAudio=false
      while(true) {
       val vt=v.sampleTime
       val at=a?.sampleTime ?: -1L
@@ -79,14 +83,28 @@ internal object NativeStreamCopy {
       buffer.clear()
       val size=ex.readSampleData(buffer,0)
       if(size<0)break
-      info.set(0,size,outputOffsetUs+max(0L,sampleTime-startUs),
+      val trackSlot=if(useVideo)0 else 1
+      val pts=outputOffsetUs+max(0L,sampleTime-startUs)
+      if(pts>=maxOutputUs)break
+      // Reject overlapping/non-monotonic track timestamps rather than writing
+      // an invalid MP4; keep each stream's timestamps strictly increasing.
+      if(pts<=lastTrackPts[trackSlot]) {
+       ex.advance()
+       continue
+      }
+      info.set(0,size,pts,
        if(useVideo && (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC)!=0)
         MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
       muxer.writeSampleData(if(useVideo)outVideo else outAudio!!,buffer,info)
-      if(useVideo)lastVideoUs=sampleTime else lastAudioUs=sampleTime
+      lastTrackPts[trackSlot]=pts
+      if(useVideo){lastVideoUs=sampleTime;wroteVideo=true}
+      else {lastAudioUs=sampleTime;wroteAudio=true}
       ex.advance()
      }
-     outputOffsetUs+=minOf(maxOutputUs-outputOffsetUs,max(1L,max(lastVideoUs,lastAudioUs)-startUs+33_333L))
+     if(wroteVideo) {
+      val lastWritten=max(lastVideoUs,if(wroteAudio)lastAudioUs else lastVideoUs)
+      outputOffsetUs+=minOf(maxOutputUs-outputOffsetUs,max(1L,lastWritten-startUs+33_333L))
+     }
     }finally {v.release();a?.release()}
     onProgress(((index+1)*100/ranges.size))
    }
