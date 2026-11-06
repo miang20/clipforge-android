@@ -119,7 +119,10 @@ class RenderService:Service() {
   thread {
    try {
     val (duration,visual)=quickScan(uri)
-    val candidates=deduplicate(enrichWithAudio(visual,duration,uri),uri)
+    // Group adjacent visual fragments into complete events BEFORE ranking or deduplication.
+    // Never shuffle or deduplicate individual fragments of the same event.
+    val events=groupCompleteEvents(visual,duration)
+    val candidates=deduplicate(enrichWithAudio(events,duration,uri),uri)
     // Automatic 5–7 minute long, adjusted to source length and usable scenes.
     val usableMs=candidates.sumOf { (it.end-it.start).coerceAtLeast(0L) }.coerceAtMost(duration)
     val autoTargetMs=when {
@@ -315,6 +318,56 @@ class RenderService:Service() {
    else->chosen.shuffled()
   }
  }
+ // A single visual jump is not proof that a funny event ended. Merge short
+ // neighboring fragments, keeping the source timeline contiguous within each event.
+ // This intentionally favors coherent setup/action/reaction over tiny highlight cuts.
+ private fun groupCompleteEvents(fragments:List<Shot>,duration:Long):List<Shot> {
+  val ordered=fragments.filter { it.end>it.start }.sortedBy { it.start }
+  if(ordered.isEmpty())return emptyList()
+  val minEventMs=6_000L
+  val preferredEventMs=12_000L
+  val maxEventMs=35_000L
+  val events=mutableListOf<Shot>()
+  var start=ordered.first().start
+  var end=ordered.first().end
+  var weightedScore=ordered.first().score*(end-start)
+  var weight=(end-start).toDouble()
+  fun flush() {
+   if(end>start)events.add(Shot(start,end,if(weight>0)weightedScore/weight else 0.0))
+  }
+  for(i in 1 until ordered.size) {
+   val next=ordered[i]
+   val contiguous=next.start<=end+250L
+   val currentLength=end-start
+   val nextLength=next.end-start
+   // Keep short setup/action/reaction fragments together; avoid gigantic events.
+   val merge=contiguous && (currentLength<minEventMs ||
+    (currentLength<preferredEventMs && nextLength<=maxEventMs) ||
+    (next.end-next.start<2_000L && nextLength<=maxEventMs))
+   if(merge) {
+    val w=(next.end-next.start).toDouble()
+    weightedScore+=next.score*w
+    weight+=w
+    end=max(end,next.end)
+   } else {
+    flush()
+    start=next.start;end=next.end
+    weight=(end-start).toDouble();weightedScore=next.score*weight
+   }
+  }
+  flush()
+  // A trailing sub-second fragment is never a useful standalone compilation event.
+  if(events.size>1 && events.last().end-events.last().start<2_000L) {
+   val tail=events.removeAt(events.lastIndex)
+   val prior=events.removeAt(events.lastIndex)
+   if(tail.start-prior.end<=250L && tail.end-prior.start<=maxEventMs) {
+    val a=(prior.end-prior.start).toDouble()
+    val b=(tail.end-tail.start).toDouble()
+    events.add(Shot(prior.start,tail.end,(prior.score*a+tail.score*b)/(a+b)))
+   } else {events.add(prior);events.add(tail)}
+  }
+  return events.filter { it.start>=0L && it.end<=duration && it.end-it.start>=2_000L }
+ }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>):List<Shot> {
   // Real detected scenes, never arbitrary 30/60 second shuffle blocks.
   // Use the original source timestamps, preserving source audio with each scene.
@@ -335,14 +388,16 @@ class RenderService:Service() {
   val chosen=mutableListOf<Shot>()
   var remaining=min(target,duration)
   for(scene in ordered) {
-   if(remaining<=0L)break
-   // A scene is never extended or combined just to fill a time block.
-   val length=min(scene.end-scene.start,remaining)
-   if(length>0L) {
-    chosen.add(scene.copy(end=scene.start+length))
-    remaining-=length
-   }
+   val length=scene.end-scene.start
+   // Never split an event just to hit the duration target: the remainder would
+   // otherwise reappear elsewhere as a confusing half-scene.
+   if(length<2_000L || length>remaining)continue
+   chosen.add(scene)
+   remaining-=length
+   if(remaining<2_000L)break
   }
+  // If the best event exceeds the budget, leave the output shorter rather than
+  // exporting a half-action. The native muxer may add keyframe pre-roll.
   return chosen
  }
  private fun chooseCompleteShort(candidates:List<Shot>,duration:Long,excluded:List<Shot>,preferredMs:Long,mode:Int):List<Shot> {
