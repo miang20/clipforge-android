@@ -121,7 +121,7 @@ class RenderService:Service() {
     val (duration,visual)=quickScan(uri)
     // Group adjacent visual fragments into complete events BEFORE ranking or deduplication.
     // Never shuffle or deduplicate individual fragments of the same event.
-    val events=groupCompleteEvents(visual,duration)
+    val events=protectEventBoundaries(groupCompleteEvents(visual,duration),duration)
     val candidates=deduplicate(enrichWithAudio(events,duration,uri),uri)
     // Automatic 5–7 minute long, adjusted to source length and usable scenes.
     val usableMs=candidates.sumOf { (it.end-it.start).coerceAtLeast(0L) }.coerceAtMost(duration)
@@ -377,6 +377,26 @@ class RenderService:Service() {
    } else {events.add(prior);events.add(tail)}
   }
   return events.filter { it.start>=0L && it.end<=duration && it.end-it.start>=2_000L }
+ }
+ // Conservative boundary padding: retain context before an event and especially
+ // the reaction after it. Clamp extensions at neighboring event midpoints so
+ // footage is never repeated across adjacent events.
+ private fun protectEventBoundaries(events:List<Shot>,duration:Long):List<Shot> {
+  val sorted=events.sortedBy {it.start}
+  if(sorted.isEmpty())return sorted
+  val protected=mutableListOf<Shot>()
+  for(i in sorted.indices) {
+   val event=sorted[i]
+   val previous=sorted.getOrNull(i-1)
+   val next=sorted.getOrNull(i+1)
+   val leftLimit=if(previous==null)0L else (previous.end+event.start)/2L
+   val rightLimit=if(next==null)duration else (event.end+next.start)/2L
+   // Allow more trailing context for reactions; never cross a neighbor boundary.
+   val start=max(leftLimit,event.start-1_500L).coerceAtLeast(0L)
+   val end=min(rightLimit,event.end+3_500L).coerceAtMost(duration)
+   if(end-start>=2_000L)protected.add(Shot(start,end,event.score))
+  }
+  return protected
  }
  private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>):List<Shot> {
   val valid=candidates.filter { it.end>it.start && it.start>=0L && it.end<=duration }
