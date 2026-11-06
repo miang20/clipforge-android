@@ -45,8 +45,11 @@ internal object NativeStreamCopy {
    val buffer=ByteBuffer.allocateDirect(4*1024*1024)
    val info=MediaCodec.BufferInfo()
    var outputOffsetUs=0L
+   // Absolute output ceiling: prevent keyframe pre-roll from extending a 5–7m long.
+   val maxOutputUs=420_000_000L
    ranges.forEachIndexed { index,range ->
     require(range.endMs>range.startMs)
+    if(outputOffsetUs>=maxOutputUs)return@forEachIndexed
     val v=MediaExtractor()
     val a=if(audio!=null)MediaExtractor() else null
     try {
@@ -54,7 +57,7 @@ internal object NativeStreamCopy {
      v.seekTo(range.startMs*1000,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
      val startUs=v.sampleTime
      require(startUs>=0L){"Unable to seek video"}
-     val endUs=range.endMs*1000
+     val endUs=minOf(range.endMs*1000,startUs+(maxOutputUs-outputOffsetUs))
      if(a!=null && audio!=null) {
       a.setDataSource(context,uri,null);a.selectTrack(audio)
       a.seekTo(startUs,MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
@@ -83,7 +86,7 @@ internal object NativeStreamCopy {
       if(useVideo)lastVideoUs=sampleTime else lastAudioUs=sampleTime
       ex.advance()
      }
-     outputOffsetUs+=max(1L,max(lastVideoUs,lastAudioUs)-startUs+33_333L)
+     outputOffsetUs+=minOf(maxOutputUs-outputOffsetUs,max(1L,max(lastVideoUs,lastAudioUs)-startUs+33_333L))
     }finally {v.release();a?.release()}
     onProgress(((index+1)*100/ranges.size))
    }
