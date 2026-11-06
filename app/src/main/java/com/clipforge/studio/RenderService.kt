@@ -130,7 +130,7 @@ class RenderService:Service() {
      usableMs<420_000L -> usableMs
      else -> (300_000L+((usableMs-420_000L)/6L)).coerceIn(300_000L,420_000L)
     }
-    val long=chooseLongExportShots(duration,autoTargetMs,remixStyle,candidates)
+    val long=chooseLongExportShots(duration,autoTargetMs,remixStyle,candidates,visual)
     // Preserve continuous story windows for the Shorts selector.
     // Short selections are ranked independently of the long timeline.
     val energy=chooseCompleteShort(candidates,duration,emptyList(),shortLength*1000L,0)
@@ -398,7 +398,7 @@ class RenderService:Service() {
   }
   return protected
  }
- private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>):List<Shot> {
+ private fun chooseLongExportShots(duration:Long,target:Long,style:Int,candidates:List<Shot>,visualFragments:List<Shot>):List<Shot> {
   val valid=candidates.filter { it.end>it.start && it.start>=0L && it.end<=duration }
   if(valid.isEmpty())return emptyList()
   val budget=min(target,duration)
@@ -408,7 +408,24 @@ class RenderService:Service() {
    3->valid.sortedByDescending { it.start }
    else-> {
     // Hook from the strongest COMPLETE event that fits the output budget.
-    val hook=ranked.firstOrNull {it.end-it.start<=budget}
+    // Opening hook: prioritize activity in the FIRST seconds, not just the
+    // event's average score. Keep the entire event so setup/payoff remain intact.
+    val eligibleHooks=ranked.filter { it.end-it.start in 5_000L..min(35_000L,budget) }
+    val hook=eligibleHooks.maxByOrNull { event ->
+     val firstEnd=min(event.end,event.start+3_000L)
+     val opening=visualFragments.filter { it.start<firstEnd && it.end>event.start }
+     val earlyMotion=opening.map { fragment ->
+      // quickScan adds a duration bonus; remove it to estimate visual change.
+      (fragment.score-min(fragment.end-fragment.start,12_000L)/3000.0).coerceAtLeast(0.0)
+     }
+     val mean=if(earlyMotion.isEmpty())0.0 else earlyMotion.average()
+     val peak=earlyMotion.maxOrNull()?:0.0
+     val length=event.end-event.start
+     // Reward instant visual activity and a compact complete payoff, but
+     // retain the established quality score as a tie-breaker.
+     mean*2.0+peak*1.5+event.score*0.30-
+      max(0L,length-20_000L)/10_000.0
+    } ?: ranked.firstOrNull {it.end-it.start<=budget}
     if(hook==null)emptyList() else {
      val rest=ranked.filter {it!==hook}
      // Interleave quality tiers and source regions so consecutive clips are
