@@ -96,8 +96,9 @@ class MainActivity : Activity() {
    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE);type="video/*" },100)
   }}
   card.addView(select)
-  card.addView(txt("02   LONG VIDEO DURATION (MINUTES)",13f,accent,true))
-  minutes=EditText(this).apply { inputType=InputType.TYPE_CLASS_NUMBER;setText("10");setTextColor(Color.WHITE);setHintTextColor(Color.GRAY);hint="7–10 minutes";backgroundTintList=android.content.res.ColorStateList.valueOf(accent) }
+  card.addView(txt("02   LONG VIDEO DURATION — AUTO 5–7 MINUTES",13f,accent,true))
+  minutes=EditText(this).apply { inputType=InputType.TYPE_CLASS_NUMBER;setText("10");setTextColor(Color.WHITE);setHintTextColor(Color.GRAY);hint="Auto: 5–7 minutes";backgroundTintList=android.content.res.ColorStateList.valueOf(accent) }
+  minutes.visibility=View.GONE
   card.addView(minutes)
   val advanced=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;visibility=View.GONE }
   advanced.addView(txt("03   OUTPUT FORMAT",13f,accent,true))
