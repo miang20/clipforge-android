@@ -120,7 +120,14 @@ class RenderService:Service() {
    try {
     val (duration,visual)=quickScan(uri)
     val candidates=deduplicate(enrichWithAudio(visual,duration,uri),uri)
-    val long=chooseLongExportShots(duration,min(duration,minutes*60_000L),remixStyle,candidates)
+    // Automatic 5–7 minute long, adjusted to source length and usable scenes.
+    val usableMs=candidates.sumOf { (it.end-it.start).coerceAtLeast(0L) }.coerceAtMost(duration)
+    val autoTargetMs=when {
+     usableMs<=300_000L -> usableMs
+     usableMs<420_000L -> usableMs
+     else -> (300_000L+((usableMs-420_000L)/6L)).coerceIn(300_000L,420_000L)
+    }
+    val long=chooseLongExportShots(duration,autoTargetMs,remixStyle,candidates)
     // Preserve continuous story windows for the Shorts selector.
     // Short selections are ranked independently of the long timeline.
     val energy=chooseCompleteShort(candidates,duration,emptyList(),shortLength*1000L,0)
@@ -317,9 +324,12 @@ class RenderService:Service() {
    2->valid.sortedBy { it.start }
    3->valid.sortedByDescending { it.start }
    else->{
+    // Prefer the highest-scoring distinct scenes; shuffle within small
+    // quality bands rather than randomly filling with weak moments.
     val ranked=valid.sortedByDescending { it.score }
     val hook=ranked.first()
-    listOf(hook)+ranked.drop(1).shuffled()
+    val remaining=ranked.drop(1).chunked(5).flatMap { it.shuffled() }
+    listOf(hook)+remaining
    }
   }
   val chosen=mutableListOf<Shot>()
