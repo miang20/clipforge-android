@@ -403,67 +403,64 @@ class RenderService:Service() {
   if(valid.isEmpty())return emptyList()
   val budget=min(target,duration)
   val ranked=valid.sortedByDescending { it.score }
-  val ordered=when(style) {
-   2->valid.sortedBy { it.start }
-   3->valid.sortedByDescending { it.start }
-   else-> {
-    // Hook from the strongest COMPLETE event that fits the output budget.
-    // Opening hook: prioritize activity in the FIRST seconds, not just the
-    // event's average score. Keep the entire event so setup/payoff remain intact.
-    val eligibleHooks=ranked.filter { it.end-it.start in 5_000L..min(35_000L,budget) }
-    val hook=eligibleHooks.maxByOrNull { event ->
-     val firstEnd=min(event.end,event.start+3_000L)
-     val opening=visualFragments.filter { it.start<firstEnd && it.end>event.start }
-     val earlyMotion=opening.map { fragment ->
-      // quickScan adds a duration bonus; remove it to estimate visual change.
-      (fragment.score-min(fragment.end-fragment.start,12_000L)/3000.0).coerceAtLeast(0.0)
-     }
-     val mean=if(earlyMotion.isEmpty())0.0 else earlyMotion.average()
-     val peak=earlyMotion.maxOrNull()?:0.0
-     val length=event.end-event.start
-     // Reward instant visual activity and a compact complete payoff, but
-     // retain the established quality score as a tie-breaker.
-     mean*2.0+peak*1.5+event.score*0.30-
-      max(0L,length-20_000L)/10_000.0
-    } ?: ranked.firstOrNull {it.end-it.start<=budget}
-    if(hook==null)emptyList() else {
-     val rest=ranked.filter {it!==hook}
-     // Interleave quality tiers and source regions so consecutive clips are
-     // neither monotonous nor just adjacent fragments from one source stretch.
-     val top=rest.take(max(1,rest.size/3)).shuffled()
-     val middle=rest.drop(top.size).take(max(1,rest.size/3)).shuffled()
-     val lower=rest.drop(top.size+middle.size).shuffled()
-     val mixed=mutableListOf<Shot>()
-     val tiers=listOf(top,middle,lower)
-     var i=0
-     while(tiers.any {i<it.size}) {
-      for(tier in tiers)if(i<tier.size)mixed.add(tier[i])
-      i++
-     }
-     listOf(hook)+mixed
-    }
-   }
-  }
-  val chosen=mutableListOf<Shot>()
-  var remaining=budget
-  for(scene in ordered) {
-   val length=scene.end-scene.start
-   if(length<2_000L || length>remaining)continue
-   // Never put neighboring original events directly beside each other in
-   // remix mode; this reduces accidental continuation of one source sequence.
-   if(style!=2 && style!=3 && chosen.isNotEmpty() &&
-      kotlin.math.abs(scene.start-chosen.last().end)<3_000L)continue
-   chosen.add(scene)
-   remaining-=length
-   if(remaining<2_000L)break
-  }
-  // Fill the tail with whole events only; no partial action or arbitrary filler.
-  if(remaining>=2_000L && style!=2 && style!=3) {
-   for(scene in ranked) {
+  // Keep explicit chronological/reverse styles unchanged.
+  if(style==2 || style==3) {
+   val ordered=if(style==2)valid.sortedBy {it.start} else valid.sortedByDescending {it.start}
+   val chosen=mutableListOf<Shot>()
+   var remaining=budget
+   for(scene in ordered) {
     val length=scene.end-scene.start
-    if(length in 2_000L..remaining && chosen.none {it.start==scene.start && it.end==scene.end}) {
+    if(length>=2_000L && length<=remaining) {
      chosen.add(scene)
      remaining-=length
+    }
+   }
+   return chosen
+  }
+  // Timeline-local shuffle: use source blocks in original order, remix only
+  // complete events INSIDE each 2-minute block. Do not cut events at blocks.
+  val blockMs=120_000L
+  val blocks=valid.groupBy { (it.start/blockMs).toInt() }.toSortedMap()
+  val chosen=mutableListOf<Shot>()
+  var remaining=budget
+  val perBlockTarget=90_000L
+  for((_,events) in blocks) {
+   if(remaining<2_000L)break
+   val blockBudget=min(perBlockTarget,remaining)
+   // First block: prioritize fast opening activity among early source events.
+   val ordered=if(chosen.isEmpty()) {
+    val hookPool=events.filter {it.end-it.start in 5_000L..35_000L}
+    val hook=hookPool.maxByOrNull {event ->
+     val early=visualFragments.filter {it.start<min(event.end,event.start+3_000L) && it.end>event.start}
+     val activity=early.map {fragment ->
+      (fragment.score-min(fragment.end-fragment.start,12_000L)/3000.0).coerceAtLeast(0.0)
+     }
+     (activity.maxOrNull()?:0.0)*1.5+(if(activity.isEmpty())0.0 else activity.average())*2.0+event.score*0.3
+    }
+    if(hook!=null)listOf(hook)+events.filter {it!==hook}.shuffled()
+    else events.shuffled()
+   } else events.shuffled()
+   var usedInBlock=0L
+   for(scene in ordered) {
+    val length=scene.end-scene.start
+    if(length<2_000L || length>remaining || usedInBlock+length>blockBudget)continue
+    chosen.add(scene)
+    usedInBlock+=length
+    remaining-=length
+    if(remaining<2_000L)break
+   }
+  }
+  // If sparse blocks leave the long short, fill from remaining whole events
+  // while retaining source-block chronology rather than global random order.
+  if(remaining>=2_000L) {
+   for((_,events) in blocks) {
+    for(scene in events.shuffled()) {
+     val length=scene.end-scene.start
+     if(length>=2_000L && length<=remaining && chosen.none {it.start==scene.start && it.end==scene.end}) {
+      chosen.add(scene)
+      remaining-=length
+     }
+     if(remaining<2_000L)break
     }
     if(remaining<2_000L)break
    }
